@@ -20,11 +20,27 @@ from services.formatter import BusinessReportFormatter
 def test_settings_initialization():
     """Verify settings initialization and defaults."""
     settings = Settings(
-        bot_token="123456:TEST_TOKEN", db_path="custom.db", retention_days=30
+        bot_token="123456:TEST_TOKEN",
+        db_path="custom.db",
+        retention_days=30,
+        allowed_user_ids=[965180470],
     )
     assert settings.bot_token == "123456:TEST_TOKEN"
     assert settings.db_path == "custom.db"
     assert settings.retention_days == 30
+    assert settings.is_user_allowed(965180470) is True
+    assert settings.is_user_allowed(111222) is False
+
+
+def test_settings_allowed_user_ids_parsing():
+    """Verify string parsing of comma-separated allowed user IDs."""
+    settings = Settings(
+        bot_token="123456:TEST_TOKEN",
+        allowed_user_ids="965180470, 12345678",  # type: ignore
+    )
+    assert settings.is_user_allowed(965180470) is True
+    assert settings.is_user_allowed(12345678) is True
+    assert settings.is_user_allowed(99999999) is False
 
 
 def test_database_and_repository():

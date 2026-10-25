@@ -10,6 +10,7 @@ from aiogram.types import (
     Message,
 )
 
+from config.settings import Settings
 from database.models import BusinessConnectionModel, BusinessMessageModel
 from database.repository import BusinessRepository
 from services.formatter import BusinessReportFormatter
@@ -53,9 +54,32 @@ def _extract_media(message: Message) -> tuple[str | None, str | None]:
 
 @router.business_connection()
 async def on_business_connection(
-    connection: BusinessConnection, bot: Bot, repository: BusinessRepository
+    connection: BusinessConnection,
+    bot: Bot,
+    repository: BusinessRepository,
+    settings: Settings,
 ):
     """Fired when a user connects or disconnects the bot in Chat Automation settings."""
+    if not settings.is_user_allowed(connection.user.id):
+        logger.warning(
+            "Rejected unauthorized business connection: user_id=%s, id=%s",
+            connection.user.id,
+            connection.id,
+        )
+        try:
+            await bot.send_message(
+                connection.user_chat_id,
+                "⛔️ <b>Доступ ограничен</b>\n\n"
+                "Этот бот является персональным и доступен только владельцу.",
+                parse_mode="html",
+            )
+        except TelegramAPIError as e:
+            logger.warning(
+                "Could not send rejection message to user %s: %s",
+                connection.user_chat_id,
+                e,
+            )
+        return
     conn_model = BusinessConnectionModel(
         connection_id=connection.id,
         user_id=connection.user.id,
@@ -90,9 +114,15 @@ async def on_business_connection(
 
 
 @router.business_message()
-async def on_business_message(message: Message, repository: BusinessRepository):
+async def on_business_message(
+    message: Message, repository: BusinessRepository, settings: Settings
+):
     """Caches incoming and outgoing messages from business chats."""
     if not message.business_connection_id:
+        return
+
+    conn = await repository.get_connection_by_id(message.business_connection_id)
+    if not conn or not conn.is_enabled or not settings.is_user_allowed(conn.user_id):
         return
 
     media_type, media_file_id = _extract_media(message)
@@ -136,10 +166,14 @@ async def on_business_message(message: Message, repository: BusinessRepository):
 
 @router.edited_business_message()
 async def on_edited_business_message(
-    message: Message, bot: Bot, repository: BusinessRepository
+    message: Message, bot: Bot, repository: BusinessRepository, settings: Settings
 ):
     """Fired when an existing business message is edited."""
     if not message.business_connection_id:
+        return
+
+    conn = await repository.get_connection_by_id(message.business_connection_id)
+    if not conn or not conn.is_enabled or not settings.is_user_allowed(conn.user_id):
         return
 
     new_text = message.text or message.caption or ""
@@ -147,14 +181,7 @@ async def on_edited_business_message(
         message.business_connection_id, message.chat.id, message.message_id
     )
 
-    if not cached:
-        return
-
-    if (cached.text or "") == new_text:
-        return
-
-    conn = await repository.get_connection_by_id(message.business_connection_id)
-    if not conn or not conn.is_enabled:
+    if not cached or (cached.text or "") == new_text:
         return
 
     edited_at = _to_timestamp(message.edit_date or message.date)
@@ -244,11 +271,14 @@ async def _deliver_deleted_media(
 
 @router.deleted_business_messages()
 async def on_deleted_business_messages(
-    event: BusinessMessagesDeleted, bot: Bot, repository: BusinessRepository
+    event: BusinessMessagesDeleted,
+    bot: Bot,
+    repository: BusinessRepository,
+    settings: Settings,
 ):
     """Fired when messages in a business chat are deleted."""
     conn = await repository.get_connection_by_id(event.business_connection_id)
-    if not conn or not conn.is_enabled:
+    if not conn or not conn.is_enabled or not settings.is_user_allowed(conn.user_id):
         return
 
     now_ts = int(time.time())

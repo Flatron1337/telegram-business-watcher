@@ -20,6 +20,7 @@ from config.settings import Settings, get_settings
 from database.connection import Database
 from database.repository import BusinessRepository
 from handlers import business_router, user_commands_router
+from middlewares import AuthMiddleware
 from utils.logging import setup_logger
 
 logger = setup_logger("business.main")
@@ -60,10 +61,13 @@ def load_settings() -> Settings:
     return get_settings(env_path)
 
 
-def create_dispatcher(repository: BusinessRepository) -> Dispatcher:
+def create_dispatcher(repository: BusinessRepository, settings: Settings) -> Dispatcher:
     """Creates and configures Aiogram Dispatcher with routers and dependencies."""
     dp = Dispatcher()
     dp["repository"] = repository
+    dp["settings"] = settings
+    dp.message.outer_middleware(AuthMiddleware())
+    dp.callback_query.outer_middleware(AuthMiddleware())
     dp.include_router(user_commands_router)
     dp.include_router(business_router)
     return dp
@@ -142,7 +146,7 @@ async def run_bot() -> None:
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    dp = create_dispatcher(repository)
+    dp = create_dispatcher(repository, settings)
 
     try:
         bot_info = await bot.get_me()
@@ -157,6 +161,7 @@ async def run_bot() -> None:
         await dp.start_polling(
             bot,
             repository=repository,
+            settings=settings,
             allowed_updates=ALLOWED_UPDATES,
         )
     finally:

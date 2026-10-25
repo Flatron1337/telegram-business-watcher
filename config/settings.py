@@ -1,5 +1,7 @@
 from pathlib import Path
+from typing import Any
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +14,27 @@ class Settings(BaseSettings):
     port: int | None = None
     render_external_url: str | None = None
     ping_interval_seconds: int = 300
+    allowed_user_ids: list[int] = [965180470]
+
+    @field_validator("allowed_user_ids", mode="before")
+    @classmethod
+    def parse_allowed_user_ids(cls, v: Any) -> list[int]:
+        if isinstance(v, str):
+            if not v.strip():
+                return []
+            return [
+                int(x.strip()) for x in v.split(",") if x.strip().lstrip("-").isdigit()
+            ]
+        if isinstance(v, (int, float)):
+            return [int(v)]
+        if isinstance(v, list):
+            return [int(x) for x in v]
+        return []
+
+    def is_user_allowed(self, user_id: int | None) -> bool:
+        if not self.allowed_user_ids:
+            return True
+        return user_id is not None and user_id in self.allowed_user_ids
 
     model_config = SettingsConfigDict(
         env_file=".env",
