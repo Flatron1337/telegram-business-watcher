@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: telegram-business-watcher-bot
+    runtime: python
+    plan: free
+    region: frankfurt
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: RETENTION_DAYS
+        value: "14"
+      - key: PYTHONUNBUFFERED
+        value: "1"
