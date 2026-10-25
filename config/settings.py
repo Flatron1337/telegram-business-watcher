@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     db_path: str = "business_watcher.db"
     retention_days: int = 14
     port: int | None = None
+    render_external_url: str | None = None
+    ping_interval_seconds: int = 300
 
     model_config = SettingsConfigDict(
         env_file=".env",

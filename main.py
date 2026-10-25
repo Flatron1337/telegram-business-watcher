@@ -10,6 +10,7 @@ root_dir = Path(__file__).resolve().parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
+import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -86,6 +87,31 @@ async def start_health_server(port: int) -> web.AppRunner:
     return runner
 
 
+async def keep_alive_task(ping_url: str, interval: int = 300) -> None:
+    """Periodically sends an HTTP GET request to prevent Render from sleeping."""
+    health_url = f"{ping_url.rstrip('/')}/health"
+    await asyncio.sleep(30)
+    logger.info(
+        "Anti-sleep task activated: pinging %s every %d s", health_url, interval
+    )
+
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while True:
+            try:
+                async with session.get(health_url) as resp:
+                    logger.debug("Anti-sleep ping: %s -> %d", health_url, resp.status)
+            except asyncio.CancelledError:
+                break
+            except (aiohttp.ClientError, TimeoutError) as err:
+                logger.warning("Anti-sleep ping failure: %s", err)
+
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+
+
 async def run_bot() -> None:
     """Main async entrypoint for the Telegram Business Watcher bot."""
     settings = load_settings()
@@ -102,6 +128,15 @@ async def run_bot() -> None:
     web_runner: web.AppRunner | None = None
     if settings.port:
         web_runner = await start_health_server(settings.port)
+
+    target_ping_url = settings.render_external_url or (
+        "https://telegram-business-watcher.onrender.com" if settings.port else None
+    )
+    pinger_task: asyncio.Task[None] | None = None
+    if target_ping_url:
+        pinger_task = asyncio.create_task(
+            keep_alive_task(target_ping_url, settings.ping_interval_seconds)
+        )
 
     bot = Bot(
         token=settings.bot_token,
@@ -126,6 +161,10 @@ async def run_bot() -> None:
         )
     finally:
         logger.info("Shutting down bot and closing connections...")
+        if pinger_task:
+            pinger_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pinger_task
         if web_runner:
             await web_runner.cleanup()
         cleanup_task.cancel()
