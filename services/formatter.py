@@ -266,3 +266,46 @@ class BusinessReportFormatter:
             f"<blockquote expandable>{new_content}</blockquote>",
         ]
         return "\n".join(report_lines)
+
+    @classmethod
+    def format_view_once_report(cls, msg: BusinessMessageModel) -> str:
+        """Builds an HTML report card for intercepted view-once / disappearing media."""
+        sender_str = cls._format_user(
+            msg.sender_id, msg.sender_name, msg.sender_username
+        )
+        chat_name = html.escape((msg.chat_title or "Личный диалог")[:128])
+        media_label = cls.MEDIA_ICONS.get(
+            msg.media_type or "", f"📎 {msg.media_type or 'медиа'}"
+        )
+
+        header_lines = [
+            "🔥 <b>ПЕРЕХВАЧЕНО ОДНОРАЗОВОЕ МЕДИА</b>",
+            cls.DIVIDER,
+            f"👤 <b>Собеседник:</b> {sender_str}",
+            f"💬 <b>Чат:</b> <b>{chat_name}</b> · <i>Личные сообщения</i>",
+            (
+                f"🆔 <b>ID сообщения:</b> <code>{msg.message_id}</code> · "
+                f"<b>ID автора:</b> <code>{msg.sender_id}</code>"
+            ),
+            "",
+            "⏱ <b>Хронология:</b>",
+            f" └ 🕒 Отправлено: <code>{cls._format_date(msg.date)}</code>",
+            "",
+            f"📎 <b>Вложение:</b> {media_label} <i>(файл сохранён ниже)</i>",
+        ]
+
+        if not msg.text:
+            return "\n".join(header_lines)
+
+        header_str = "\n".join(header_lines)
+        block_overhead = len(
+            f"\n{cls.DIVIDER}\n💬 <b>Подпись к медиа:</b>\n<blockquote expandable></blockquote>"
+        )
+        budget = max(50, cls.MAX_MESSAGE_LENGTH - len(header_str) - block_overhead)
+        escaped_content = cls._escape_and_truncate(msg.text, budget)
+        return (
+            f"{header_str}\n"
+            f"{cls.DIVIDER}\n"
+            f"💬 <b>Подпись к медиа:</b>\n"
+            f"<blockquote expandable>{escaped_content}</blockquote>"
+        )

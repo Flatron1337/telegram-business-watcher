@@ -21,6 +21,7 @@ from services.media import (
     extract_media,
     safe_telegram_call,
 )
+from services.view_once import handle_view_once_reply
 from utils.logging import setup_logger
 
 logger = setup_logger("business.handlers")
@@ -158,6 +159,9 @@ async def on_business_message(
     )
     if not conn or not conn.is_enabled or not settings.is_user_allowed(conn.user_id):
         return
+
+    if message.reply_to_message:
+        await handle_view_once_reply(message, conn, bot, repository)
 
     media_type, media_file_id, media_file_unique_id = extract_media(message)
     content_text = message.text or message.caption or ""

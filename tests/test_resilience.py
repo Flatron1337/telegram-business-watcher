@@ -1,10 +1,16 @@
 import asyncio
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
 
 from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
+from aiogram.types import BufferedInputFile
 
+from config.settings import Settings
 from database.connection import Database
 from database.models import BusinessConnectionModel, BusinessMessageModel
 from database.repository import BusinessRepository
+from handlers.business import on_business_message
 from handlers.user_commands import _get_welcome_text
 from services.formatter import BusinessReportFormatter
 from services.media import deliver_deleted_media, safe_telegram_call
@@ -20,8 +26,14 @@ class DummyBot:
     async def send_message(self, chat_id: int, text: str, **kwargs):
         self.sent_messages.append({"chat_id": chat_id, "text": text, **kwargs})
 
-    async def send_photo(self, chat_id: int, photo: str, **kwargs):
+    async def send_photo(self, chat_id: int, photo: Any, **kwargs):
         self.sent_photos.append({"chat_id": chat_id, "photo": photo, **kwargs})
+
+    async def download(self, file_id: str, destination=None):
+        if destination:
+            destination.write(b"fake_image_content_bytes")
+            destination.seek(0)
+        return destination
 
 
 class MockRedis:
@@ -29,6 +41,7 @@ class MockRedis:
 
     def __init__(self):
         self.store: dict[str, str] = {}
+        self.sets: dict[str, set[str]] = {}
 
     async def get(self, key: str):
         return self.store.get(key)
@@ -38,6 +51,12 @@ class MockRedis:
 
     async def delete(self, key: str):
         self.store.pop(key, None)
+
+    async def sismember(self, key: str, member: str) -> bool:
+        return member in self.sets.get(key, set())
+
+    async def sadd(self, key: str, member: str):
+        self.sets.setdefault(key, set()).add(member)
 
 
 def test_deliver_deleted_media_long_report_no_caption_limit():
@@ -203,3 +222,116 @@ def test_welcome_text_escapes_html_and_attachment_deleted_branch():
     )
     assert "(удалено, файл ниже)" in report
     assert "🎬 Видеозапись" in report
+
+
+def _build_view_once_messages():
+    empty_media = dict.fromkeys(
+        ["video", "video_note", "voice", "audio", "document", "animation", "sticker"],
+        None,
+    )
+    chat = SimpleNamespace(
+        id=555, title="Secret Chat", full_name="Secret Chat", username=None
+    )
+    reply = SimpleNamespace(
+        message_id=999,
+        chat=chat,
+        photo=[SimpleNamespace(file_id="vo_photo_id", file_unique_id="vo_photo_uid")],
+        has_protected_content=True,
+        from_user=SimpleNamespace(
+            id=200, first_name="Agent", last_name="007", username="bond"
+        ),
+        date=datetime.fromtimestamp(1700000000, tz=UTC),
+        text=None,
+        caption="Top secret snapshot",
+        **empty_media,
+    )
+    user = SimpleNamespace(id=100, first_name="Me", last_name="", username="me")
+    msg1 = SimpleNamespace(
+        business_connection_id="conn_vo",
+        chat=chat,
+        message_id=1001,
+        from_user=user,
+        reply_to_message=reply,
+        text="Catch it!",
+        caption=None,
+        photo=None,
+        date=datetime.fromtimestamp(1700000010, tz=UTC),
+        **empty_media,
+    )
+    msg2 = SimpleNamespace(
+        business_connection_id="conn_vo",
+        chat=chat,
+        message_id=1002,
+        from_user=user,
+        reply_to_message=reply,
+        text="Second reply to same view-once message",
+        caption=None,
+        photo=None,
+        date=datetime.fromtimestamp(1700000020, tz=UTC),
+        **empty_media,
+    )
+    return reply, msg1, msg2
+
+
+def test_view_once_media_interception_via_reply():
+    """Verifies reply to view-once media downloads to RAM, sends card, and deduplicates in DB."""
+
+    async def _run():
+        db = Database(":memory:")
+        sql_conn = await db.connect()
+        mock_redis = MockRedis()
+        repo = BusinessRepository(sql_conn, mock_redis)
+        bot = DummyBot()
+        settings = Settings(
+            bot_token="123456:ABC-DEF",
+            allowed_user_ids=[100],
+            allowed_usernames=[],
+        )
+
+        try:
+            conn = BusinessConnectionModel(
+                connection_id="conn_vo",
+                user_id=100,
+                user_chat_id=100,
+                can_reply=True,
+                is_enabled=True,
+                connected_at=1700000000,
+            )
+            await repo.save_connection(conn)
+            _reply, msg1, msg2 = _build_view_once_messages()
+
+            await on_business_message(msg1, bot, repo, settings)
+
+            # 1. Report card assertions
+            assert len(bot.sent_messages) == 1
+            card = bot.sent_messages[0]["text"]
+            assert "🔥 <b>ПЕРЕХВАЧЕНО ОДНОРАЗОВОЕ МЕДИА</b>" in card
+            assert "Agent 007" in card
+            assert "Top secret snapshot" in card
+            assert "🖼 Фотография" in card
+
+            # 2. Re-uploaded media assertions
+            assert len(bot.sent_photos) == 1
+            photo_file = bot.sent_photos[0]["photo"]
+            assert isinstance(photo_file, BufferedInputFile)
+            assert photo_file.data == b"fake_image_content_bytes"
+            assert photo_file.filename == "view_once_555_999.jpg"
+
+            # 3. Database persistence check
+            saved = await repo.get_message("conn_vo", 555, 999)
+            assert saved is not None
+            assert saved.media_file_id == "vo_photo_id"
+            assert saved.media_type == "photo"
+
+            # 4. Duplicate reply deduplication check
+            bot.sent_messages.clear()
+            bot.sent_photos.clear()
+            await on_business_message(msg2, bot, repo, settings)
+
+            assert len(bot.sent_messages) == 0
+            assert len(bot.sent_photos) == 0
+
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
