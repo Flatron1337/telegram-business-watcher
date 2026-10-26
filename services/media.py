@@ -1,7 +1,13 @@
+import asyncio
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
 from aiogram.types import LinkPreviewOptions, Message
 
 from database.models import BusinessMessageModel
@@ -124,6 +130,39 @@ def extract_media(message: Message) -> tuple[str | None, str | None, str | None]
     return None, None, None
 
 
+async def safe_telegram_call(
+    func: Callable[..., Awaitable[Any]],
+    *args: Any,
+    max_retries: int = 3,
+    **kwargs: Any,
+) -> Any:
+    """Executes a Telegram API call with automatic FloodWait backoff and network retries."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            return await func(*args, **kwargs)
+        except TelegramRetryAfter as e:
+            logger.warning(
+                "Telegram FloodWait encountered, sleeping %s sec", e.retry_after
+            )
+            await asyncio.sleep(e.retry_after + 1)
+        except TelegramNetworkError as e:
+            if attempt == max_retries:
+                logger.error(
+                    "Network error on attempt %d/%d: %s", attempt, max_retries, e
+                )
+                raise
+            logger.warning(
+                "Network glitch on attempt %d/%d, retrying: %s",
+                attempt,
+                max_retries,
+                e,
+            )
+            await asyncio.sleep(0.5 * attempt)
+        except TelegramAPIError:
+            raise
+    return None
+
+
 async def send_media_attachment(
     bot: Bot,
     chat_id: int,
@@ -140,7 +179,7 @@ async def send_media_attachment(
         return
 
     try:
-        await sender(bot, chat_id, file_id, caption)
+        await safe_telegram_call(sender, bot, chat_id, file_id, caption)
     except TelegramAPIError as e:
         logger.error("Failed to send media attachment (%s): %s", media_type, e)
 
@@ -148,22 +187,23 @@ async def send_media_attachment(
 async def deliver_deleted_media(
     bot: Bot, chat_id: int, msg: BusinessMessageModel, report: str
 ) -> None:
-    """Dispatches deleted message media and report to user."""
-    file_id = msg.media_file_id
-    sender = MEDIA_SENDERS.get(msg.media_type or "") if file_id else None
-
+    """Dispatches deleted message report and media to user without 1024-char caption limits."""
+    # 1. Always send the full text report card first (supports up to 4096 chars)
     try:
-        if sender and file_id:
-            await sender(bot, chat_id, file_id, report)
-        else:
-            await bot.send_message(
-                chat_id,
-                report,
-                parse_mode="html",
-                link_preview_options=LinkPreviewOptions(is_disabled=True),
-            )
+        await safe_telegram_call(
+            bot.send_message,
+            chat_id,
+            report,
+            parse_mode="html",
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        )
     except TelegramAPIError as e:
-        logger.error("Failed to deliver deleted media (%s): %s", msg.media_type, e)
+        logger.error("Failed to send deleted message report: %s", e)
+        return
+
+    # 2. If the deleted message had media, send the restored media file below
+    if msg.media_type and msg.media_file_id:
+        await send_media_attachment(bot, chat_id, msg.media_type, msg.media_file_id)
 
 
 async def deliver_edited_media(

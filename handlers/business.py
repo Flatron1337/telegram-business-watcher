@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import Any
 
@@ -18,6 +19,7 @@ from services.media import (
     deliver_deleted_media,
     deliver_edited_media,
     extract_media,
+    safe_telegram_call,
 )
 from utils.logging import setup_logger
 
@@ -239,7 +241,8 @@ async def on_edited_business_message(
     )
 
     try:
-        await bot.send_message(
+        await safe_telegram_call(
+            bot.send_message,
             conn.user_chat_id,
             report,
             parse_mode="html",
@@ -293,6 +296,9 @@ async def on_deleted_business_messages(
     now_ts = int(time.time())
 
     for msg_id in event.message_ids:
+        if len(event.message_ids) > 1:
+            await asyncio.sleep(0.05)
+
         msg = await repository.mark_deleted(
             event.business_connection_id, event.chat.id, msg_id, now_ts
         )
@@ -307,7 +313,8 @@ async def on_deleted_business_messages(
             if has_media:
                 await deliver_deleted_media(bot, conn.user_chat_id, msg, report)
             else:
-                await bot.send_message(
+                await safe_telegram_call(
+                    bot.send_message,
                     conn.user_chat_id,
                     report,
                     parse_mode="html",

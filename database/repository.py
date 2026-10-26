@@ -149,7 +149,7 @@ class BusinessRepository:
             media_type, media_file_id, media_file_unique_id, is_deleted, deleted_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        await self.conn.execute(
+        cursor = await self.conn.execute(
             query,
             (
                 msg.connection_id,
@@ -170,6 +170,8 @@ class BusinessRepository:
             ),
         )
         await self.conn.commit()
+        if cursor.lastrowid:
+            msg.id = cursor.lastrowid
 
         if self.redis:
             try:
@@ -282,12 +284,13 @@ class BusinessRepository:
             return None
 
         del_time = deleted_at or int(time.time())
-        query = (
-            "UPDATE business_messages SET is_deleted = 1, deleted_at = ? WHERE id = ?"
-        )
-        if msg.id:
-            await self.conn.execute(query, (del_time, msg.id))
-            await self.conn.commit()
+        query = """
+        UPDATE business_messages
+        SET is_deleted = 1, deleted_at = ?
+        WHERE connection_id = ? AND chat_id = ? AND message_id = ?
+        """
+        await self.conn.execute(query, (del_time, connection_id, chat_id, message_id))
+        await self.conn.commit()
 
         msg.is_deleted = True
         msg.deleted_at = del_time

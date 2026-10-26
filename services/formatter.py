@@ -162,11 +162,16 @@ class BusinessReportFormatter:
         same_type = msg.media_type == new_media_type
         same_uid = (
             bool(new_media_unique_id)
-            and bool(msg.media_file_unique_id)
             and new_media_unique_id == msg.media_file_unique_id
         )
-        is_same = (has_old and has_new and same_type and same_uid) or (
-            has_old and not has_new and new_media_unique_id is None
+        is_same = (
+            has_old
+            and has_new
+            and same_type
+            and (
+                same_uid
+                or (new_media_unique_id is None and msg.media_file_unique_id is None)
+            )
         )
 
         if is_same:

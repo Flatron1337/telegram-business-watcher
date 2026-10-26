@@ -1,5 +1,6 @@
 import logging
 import sys
+import time
 
 
 def setup_logger(
@@ -18,6 +19,7 @@ def setup_logger(
         fmt="[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    formatter.converter = time.gmtime
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.propagate = False

@@ -1,3 +1,4 @@
+import html
 import re
 import time
 
@@ -20,9 +21,10 @@ def _get_welcome_text(
     user_first_name: str, is_connected: bool, bot_username: str
 ) -> str:
     status_icon = "🟢 <b>Подключен</b>" if is_connected else "🔴 <b>Не подключен</b>"
+    safe_name = html.escape(user_first_name or "Пользователь")
 
     return (
-        f"👋 Привет, <b>{user_first_name}</b>!\n\n"
+        f"👋 Привет, <b>{safe_name}</b>!\n\n"
         f"🕵️ <b>Свидетель | Ваш личный секретарь</b>\n"
         f"Бот фиксирует удалённые и отредактированные сообщения в ваших личных чатах "
         f"и мгновенно присылает их сюда вместе с медиафайлами.\n\n"
