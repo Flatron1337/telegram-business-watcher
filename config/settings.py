@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     port: int | None = None
     render_external_url: str | None = None
     ping_interval_seconds: int = 300
-    allowed_user_ids: list[int] = [965180470, 226583258]
+    allowed_user_ids: str | list[int] = [965180470, 226583258]
     last_business_connection_id: str | None = None
     redis_url: str | None = None
 
@@ -22,10 +22,22 @@ class Settings(BaseSettings):
     @classmethod
     def parse_allowed_user_ids(cls, v: Any) -> list[int]:
         if isinstance(v, str):
-            if not v.strip():
+            clean = v.strip()
+            if not clean:
                 return []
+            if clean.startswith("[") and clean.endswith("]"):
+                import json
+
+                try:
+                    parsed = json.loads(clean)
+                    if isinstance(parsed, list):
+                        return [int(x) for x in parsed]
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    pass
             return [
-                int(x.strip()) for x in v.split(",") if x.strip().lstrip("-").isdigit()
+                int(x.strip())
+                for x in clean.split(",")
+                if x.strip().lstrip("-").isdigit()
             ]
         if isinstance(v, (int, float)):
             return [int(v)]
