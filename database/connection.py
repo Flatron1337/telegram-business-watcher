@@ -62,6 +62,7 @@ class Database:
             text TEXT,
             media_type TEXT,
             media_file_id TEXT,
+            media_file_unique_id TEXT,
             is_deleted INTEGER NOT NULL DEFAULT 0,
             deleted_at INTEGER
         );
@@ -84,4 +85,13 @@ class Database:
             ON business_messages(date);
         """
         await self._connection.executescript(schema)
+
+        # Migration check for existing SQLite databases without media_file_unique_id column
+        cursor = await self._connection.execute("PRAGMA table_info(business_messages);")
+        columns = [row["name"] for row in await cursor.fetchall()]
+        if "media_file_unique_id" not in columns:
+            await self._connection.execute(
+                "ALTER TABLE business_messages ADD COLUMN media_file_unique_id TEXT;"
+            )
+
         await self._connection.commit()

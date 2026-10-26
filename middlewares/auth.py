@@ -24,6 +24,9 @@ class AuthMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         user = getattr(event, "from_user", None)
+        if user and user.is_bot:
+            return None
+
         if user and not settings.is_user_allowed(user.id):
             logger.warning(
                 "Access blocked for unauthorized user_id=%d (@%s)",

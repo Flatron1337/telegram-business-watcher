@@ -43,22 +43,24 @@ class BusinessRepository:
         )
 
     def _row_to_message(self, row: aiosqlite.Row) -> BusinessMessageModel:
+        d = dict(row)
         return BusinessMessageModel(
-            id=row["id"],
-            connection_id=row["connection_id"],
-            chat_id=row["chat_id"],
-            chat_title=row["chat_title"],
-            chat_username=row["chat_username"],
-            message_id=row["message_id"],
-            sender_id=row["sender_id"],
-            sender_name=row["sender_name"],
-            sender_username=row["sender_username"],
-            date=row["date"],
-            text=row["text"],
-            media_type=row["media_type"],
-            media_file_id=row["media_file_id"],
-            is_deleted=bool(row["is_deleted"]),
-            deleted_at=row["deleted_at"],
+            id=d.get("id"),
+            connection_id=d["connection_id"],
+            chat_id=d["chat_id"],
+            chat_title=d.get("chat_title"),
+            chat_username=d.get("chat_username"),
+            message_id=d["message_id"],
+            sender_id=d["sender_id"],
+            sender_name=d["sender_name"],
+            sender_username=d.get("sender_username"),
+            date=d["date"],
+            text=d.get("text"),
+            media_type=d.get("media_type"),
+            media_file_id=d.get("media_file_id"),
+            media_file_unique_id=d.get("media_file_unique_id"),
+            is_deleted=bool(d.get("is_deleted", False)),
+            deleted_at=d.get("deleted_at"),
         )
 
     async def save_connection(self, conn: BusinessConnectionModel) -> None:
@@ -144,8 +146,8 @@ class BusinessRepository:
         INSERT INTO business_messages (
             connection_id, chat_id, chat_title, chat_username, message_id,
             sender_id, sender_name, sender_username, date, text,
-            media_type, media_file_id, is_deleted, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            media_type, media_file_id, media_file_unique_id, is_deleted, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         await self.conn.execute(
             query,
@@ -162,6 +164,7 @@ class BusinessRepository:
                 msg.text,
                 msg.media_type,
                 msg.media_file_id,
+                msg.media_file_unique_id,
                 1 if msg.is_deleted else 0,
                 msg.deleted_at,
             ),
@@ -210,9 +213,12 @@ class BusinessRepository:
         connection_id: str,
         chat_id: int,
         message_id: int,
-        old_text: str,
-        new_text: str,
+        old_text: str | None,
+        new_text: str | None,
         edited_at: int,
+        new_media_type: str | None = None,
+        new_media_file_id: str | None = None,
+        new_media_file_unique_id: str | None = None,
     ) -> None:
         edit_query = """
         INSERT INTO business_edits (
@@ -221,16 +227,32 @@ class BusinessRepository:
         """
         await self.conn.execute(
             edit_query,
-            (connection_id, chat_id, message_id, old_text, new_text, edited_at),
+            (
+                connection_id,
+                chat_id,
+                message_id,
+                old_text or "",
+                new_text or "",
+                edited_at,
+            ),
         )
 
         update_query = """
         UPDATE business_messages
-        SET text = ?
+        SET text = ?, media_type = ?, media_file_id = ?, media_file_unique_id = ?
         WHERE connection_id = ? AND chat_id = ? AND message_id = ?
         """
         await self.conn.execute(
-            update_query, (new_text, connection_id, chat_id, message_id)
+            update_query,
+            (
+                new_text,
+                new_media_type,
+                new_media_file_id,
+                new_media_file_unique_id,
+                connection_id,
+                chat_id,
+                message_id,
+            ),
         )
         await self.conn.commit()
 
@@ -241,6 +263,9 @@ class BusinessRepository:
                 if raw:
                     data = json.loads(raw)
                     data["text"] = new_text
+                    data["media_type"] = new_media_type
+                    data["media_file_id"] = new_media_file_id
+                    data["media_file_unique_id"] = new_media_file_unique_id
                     await self.redis.set(msg_key, json.dumps(data), ex=14 * 86400)
             except REDIS_EXCEPTIONS as e:
                 logger.debug("Redis cache update error (edit): %s", e)

@@ -14,6 +14,11 @@ from config.settings import Settings
 from database.models import BusinessConnectionModel, BusinessMessageModel
 from database.repository import BusinessRepository
 from services.formatter import BusinessReportFormatter
+from services.media import (
+    deliver_deleted_media,
+    deliver_edited_media,
+    extract_media,
+)
 from utils.logging import setup_logger
 
 logger = setup_logger("business.handlers")
@@ -29,27 +34,6 @@ def _to_timestamp(val: Any) -> int:
     if isinstance(val, (int, float)):
         return int(val)
     return int(time.time())
-
-
-def _extract_media(message: Message) -> tuple[str | None, str | None]:
-    """Extracts media type and telegram file_id from a message."""
-    if message.photo:
-        return "photo", message.photo[-1].file_id
-    if message.video:
-        return "video", message.video.file_id
-    if message.video_note:
-        return "video_note", message.video_note.file_id
-    if message.voice:
-        return "voice", message.voice.file_id
-    if message.audio:
-        return "audio", message.audio.file_id
-    if message.document:
-        return "document", message.document.file_id
-    if message.sticker:
-        return "sticker", message.sticker.file_id
-    if message.animation:
-        return "animation", message.animation.file_id
-    return None, None
 
 
 @router.business_connection()
@@ -173,7 +157,7 @@ async def on_business_message(
     if not conn or not conn.is_enabled or not settings.is_user_allowed(conn.user_id):
         return
 
-    media_type, media_file_id = _extract_media(message)
+    media_type, media_file_id, media_file_unique_id = extract_media(message)
     content_text = message.text or message.caption or ""
 
     sender = message.from_user
@@ -201,6 +185,7 @@ async def on_business_message(
         text=content_text,
         media_type=media_type,
         media_file_id=media_file_id,
+        media_file_unique_id=media_file_unique_id,
     )
 
     await repository.save_message(msg_model)
@@ -226,12 +211,22 @@ async def on_edited_business_message(
     if not conn or not conn.is_enabled or not settings.is_user_allowed(conn.user_id):
         return
 
+    new_media_type, new_media_file_id, new_media_file_unique_id = extract_media(message)
     new_text = message.text or message.caption or ""
     cached = await repository.get_message(
         message.business_connection_id, message.chat.id, message.message_id
     )
 
-    if not cached or (cached.text or "") == new_text:
+    if not cached:
+        return
+
+    text_changed = (cached.text or "") != new_text
+    media_type_changed = (cached.media_type or None) != (new_media_type or None)
+    media_file_changed = (cached.media_file_unique_id or None) != (
+        new_media_file_unique_id or None
+    )
+
+    if not (text_changed or media_type_changed or media_file_changed):
         return
 
     edited_at = _to_timestamp(message.edit_date or message.date)
@@ -239,6 +234,8 @@ async def on_edited_business_message(
         msg=cached,
         new_text=new_text,
         edited_at=edited_at,
+        new_media_type=new_media_type,
+        new_media_unique_id=new_media_file_unique_id,
     )
 
     try:
@@ -257,6 +254,15 @@ async def on_edited_business_message(
     except TelegramAPIError as e:
         logger.error("Failed to send edit report to user: %s", e)
 
+    await deliver_edited_media(
+        bot=bot,
+        chat_id=conn.user_chat_id,
+        cached=cached,
+        new_media_type=new_media_type,
+        new_media_file_id=new_media_file_id,
+        new_media_file_unique_id=new_media_file_unique_id,
+    )
+
     await repository.record_edit(
         connection_id=message.business_connection_id,
         chat_id=message.chat.id,
@@ -264,58 +270,9 @@ async def on_edited_business_message(
         old_text=cached.text or "",
         new_text=new_text,
         edited_at=edited_at,
-    )
-
-
-MEDIA_DIRECT_SENDERS = {
-    "photo": lambda bot, chat_id, file_id, caption: bot.send_photo(
-        chat_id, photo=file_id, caption=caption, parse_mode="html"
-    ),
-    "video": lambda bot, chat_id, file_id, caption: bot.send_video(
-        chat_id, video=file_id, caption=caption, parse_mode="html"
-    ),
-    "voice": lambda bot, chat_id, file_id, caption: bot.send_voice(
-        chat_id, voice=file_id, caption=caption, parse_mode="html"
-    ),
-    "audio": lambda bot, chat_id, file_id, caption: bot.send_audio(
-        chat_id, audio=file_id, caption=caption, parse_mode="html"
-    ),
-    "document": lambda bot, chat_id, file_id, caption: bot.send_document(
-        chat_id, document=file_id, caption=caption, parse_mode="html"
-    ),
-    "animation": lambda bot, chat_id, file_id, caption: bot.send_animation(
-        chat_id, animation=file_id, caption=caption, parse_mode="html"
-    ),
-}
-
-
-async def _deliver_deleted_media(
-    bot: Bot, chat_id: int, msg: BusinessMessageModel, report: str
-) -> None:
-    """Dispatches appropriate media message to user using a dispatch map."""
-    file_id = msg.media_file_id
-    assert file_id is not None
-    m_type = msg.media_type or ""
-
-    if sender_fn := MEDIA_DIRECT_SENDERS.get(m_type):
-        await sender_fn(bot, chat_id, file_id, report)
-        return
-
-    if m_type == "video_note":
-        await bot.send_message(chat_id, report, parse_mode="html")
-        await bot.send_video_note(chat_id, video_note=file_id)
-        return
-
-    if m_type == "sticker":
-        await bot.send_message(chat_id, report, parse_mode="html")
-        await bot.send_sticker(chat_id, sticker=file_id)
-        return
-
-    await bot.send_message(
-        chat_id,
-        report,
-        parse_mode="html",
-        link_preview_options=LinkPreviewOptions(is_disabled=True),
+        new_media_type=new_media_type,
+        new_media_file_id=new_media_file_id,
+        new_media_file_unique_id=new_media_file_unique_id,
     )
 
 
@@ -348,7 +305,7 @@ async def on_deleted_business_messages(
 
         try:
             if has_media:
-                await _deliver_deleted_media(bot, conn.user_chat_id, msg, report)
+                await deliver_deleted_media(bot, conn.user_chat_id, msg, report)
             else:
                 await bot.send_message(
                     conn.user_chat_id,

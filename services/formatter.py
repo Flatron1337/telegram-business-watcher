@@ -139,12 +139,67 @@ class BusinessReportFormatter:
         return f"{header_str}\n" + "\n".join(body_lines)
 
     @classmethod
+    def _format_attachment_change(
+        cls,
+        msg: BusinessMessageModel,
+        new_media_type: str | None,
+        new_media_unique_id: str | None,
+    ) -> list[str]:
+        has_old = bool(msg.media_type)
+        has_new = bool(new_media_type)
+        if not (has_old or has_new):
+            return []
+
+        same_type = msg.media_type == new_media_type
+        same_uid = (
+            bool(new_media_unique_id)
+            and bool(msg.media_file_unique_id)
+            and new_media_unique_id == msg.media_file_unique_id
+        )
+        is_same = (has_old and has_new and same_type and same_uid) or (
+            has_old and not has_new and new_media_unique_id is None
+        )
+
+        if is_same:
+            lbl = cls.MEDIA_ICONS.get(msg.media_type or "", f"📎 {msg.media_type}")
+            return ["", f"📎 <b>Вложение:</b> {lbl} <i>(восстановлено ниже)</i>"]
+        if has_old and has_new:
+            o_lbl = cls.MEDIA_ICONS.get(msg.media_type or "", f"📎 {msg.media_type}")
+            n_lbl = cls.MEDIA_ICONS.get(new_media_type or "", f"📎 {new_media_type}")
+            return [
+                "",
+                f"📎 <b>Вложение заменено:</b> {o_lbl} ➔ {n_lbl} <i>(файлы ниже)</i>",
+            ]
+        if has_old and not has_new:
+            o_lbl = cls.MEDIA_ICONS.get(msg.media_type or "", f"📎 {msg.media_type}")
+            return ["", f"📎 <b>Вложение:</b> {o_lbl} <i>(удалено, файл ниже)</i>"]
+        n_lbl = cls.MEDIA_ICONS.get(new_media_type or "", f"📎 {new_media_type}")
+        return ["", f"📎 <b>Вложение:</b> {n_lbl} <i>(добавлено, файл ниже)</i>"]
+
+    @classmethod
+    def _allocate_budget_pair(
+        cls, available_budget: int, old_len: int, new_len: int
+    ) -> tuple[int, int]:
+        if old_len + new_len <= available_budget:
+            return old_len + 10, new_len + 10
+        half = available_budget // 2
+        if old_len <= half:
+            return old_len, available_budget - old_len
+        if new_len <= half:
+            return available_budget - new_len, new_len
+        return half, available_budget - half
+
+    @classmethod
     def format_edited_report(
-        cls, msg: BusinessMessageModel, new_text: str | None, edited_at: int
+        cls,
+        msg: BusinessMessageModel,
+        new_text: str | None,
+        edited_at: int,
+        new_media_type: str | None = None,
+        new_media_unique_id: str | None = None,
     ) -> str:
         diff_sec = max(0, int(edited_at - msg.date))
         diff_str = cls._format_duration(diff_sec)
-
         sender_str = cls._format_user(
             msg.sender_id, msg.sender_name, msg.sender_username
         )
@@ -163,16 +218,17 @@ class BusinessReportFormatter:
             "⏱ <b>Хронология:</b>",
             f" ├ 🕒 Отправлено: <code>{cls._format_date(msg.date)}</code>",
             f" └ ✏️ Изменено: <code>{cls._format_date(edited_at)}</code> <i>(спустя {diff_str})</i>",
-            cls.DIVIDER,
         ]
+        header_lines.extend(
+            cls._format_attachment_change(msg, new_media_type, new_media_unique_id)
+        )
+        header_lines.append(cls.DIVIDER)
 
         header_str = "\n".join(header_lines)
-        structure_overhead = len(
+        overhead = len(
             "\n🔻 <b>Было:</b>\n<blockquote expandable></blockquote>\n\n🔺 <b>Стало:</b>\n<blockquote expandable></blockquote>"
         )
-        available_budget = max(
-            100, cls.MAX_MESSAGE_LENGTH - len(header_str) - structure_overhead
-        )
+        budget = max(100, cls.MAX_MESSAGE_LENGTH - len(header_str) - overhead)
 
         old_raw = msg.text or ""
         new_raw = new_text or ""
@@ -183,23 +239,9 @@ class BusinessReportFormatter:
             len(html.escape(new_raw)) if new_raw else len(cls.EMPTY_TEXT_PLACEHOLDER)
         )
 
-        if len_old + len_new <= available_budget:
-            budget_old = len_old + 10
-            budget_new = len_new + 10
-        else:
-            half = available_budget // 2
-            if len_old <= half:
-                budget_old = len_old
-                budget_new = available_budget - budget_old
-            elif len_new <= half:
-                budget_new = len_new
-                budget_old = available_budget - budget_new
-            else:
-                budget_old = half
-                budget_new = available_budget - half
-
-        old_content = cls._escape_and_truncate(msg.text, budget_old)
-        new_content = cls._escape_and_truncate(new_text, budget_new)
+        b_old, b_new = cls._allocate_budget_pair(budget, len_old, len_new)
+        old_content = cls._escape_and_truncate(msg.text, b_old)
+        new_content = cls._escape_and_truncate(new_text, b_new)
 
         report_lines = [
             header_str,
@@ -209,5 +251,4 @@ class BusinessReportFormatter:
             "🔺 <b>Стало:</b>",
             f"<blockquote expandable>{new_content}</blockquote>",
         ]
-
         return "\n".join(report_lines)

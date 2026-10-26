@@ -41,6 +41,7 @@ class BusinessMessageModel:
     text: str | None = None
     media_type: str | None = None
     media_file_id: str | None = None
+    media_file_unique_id: str | None = None
     is_deleted: bool = False
     deleted_at: int | None = None
 
@@ -63,6 +64,7 @@ class BusinessMessageModel:
             text=data.get("text"),
             media_type=data.get("media_type"),
             media_file_id=data.get("media_file_id"),
+            media_file_unique_id=data.get("media_file_unique_id"),
             is_deleted=bool(data.get("is_deleted", False)),
             deleted_at=data.get("deleted_at"),
         )
