@@ -183,6 +183,67 @@ def test_formatter_edited_report():
     assert "Новый отредактированный текст" in report
 
 
+def test_formatter_empty_text_placeholder_and_clock_skew():
+    """Verify empty text placeholder is unescaped HTML and negative time delta is protected."""
+    msg = BusinessMessageModel(
+        connection_id="conn_123",
+        chat_id=111222,
+        chat_title="Тест Чат",
+        message_id=404,
+        sender_id=123,
+        sender_name="Анна",
+        date=1700000100,
+        text=None,
+        media_type="video",
+        media_file_id="vid_123",
+    )
+    # Clock skew test: edited_at is older than message.date
+    report = BusinessReportFormatter.format_edited_report(
+        msg, new_text="Ку ку", edited_at=1700000050
+    )
+
+    # 1. <i>(нет текста)</i> must be rendered as raw italic tag, not escaped as &lt;i&gt;
+    assert "<i>(нет текста)</i>" in report
+    assert "&lt;i&gt;" not in report
+    assert "Ку ку" in report
+
+    # 2. Clock skew returns "мгновенно" and never negative time like "-1 сек."
+    assert "мгновенно" in report
+    assert "-50" not in report
+
+
+def test_formatter_message_length_limit():
+    """Verify reports with huge text never exceed 4096 chars and retain valid HTML tags."""
+    huge_text = "Здесь очень длинный текст " * 300
+    msg = BusinessMessageModel(
+        connection_id="conn_123",
+        chat_id=111222,
+        chat_title="Большой диалог",
+        message_id=505,
+        sender_id=123,
+        sender_name="Тестер",
+        date=1700000000,
+        text=huge_text,
+    )
+    # 1. Deleted report with huge text
+    deleted_report = BusinessReportFormatter.format_deleted_report(msg)
+    assert len(deleted_report) <= 4096
+    assert "[обрезано]" in deleted_report
+    assert deleted_report.count("<blockquote expandable>") == deleted_report.count(
+        "</blockquote>"
+    )
+
+    # 2. Edited report with huge texts in both fields
+    edited_report = BusinessReportFormatter.format_edited_report(
+        msg, new_text="Новый длинный текст " * 300, edited_at=1700000100
+    )
+    assert len(edited_report) <= 4096
+    assert "[обрезано]" in edited_report
+    assert edited_report.count("<blockquote expandable>") == edited_report.count(
+        "</blockquote>"
+    )
+
+
 def test_inline_keyboards():
     """Verify inline keyboards have valid buttons."""
     kb_connected = get_main_keyboard(is_connected=True, bot_username="test_bot")
