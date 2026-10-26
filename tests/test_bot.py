@@ -192,7 +192,7 @@ def test_inline_keyboards():
 
     kb_disconnected = get_main_keyboard(is_connected=False, bot_username="test_bot")
     has_connect_btn = any(
-        "Подключить бота" in btn.text
+        "Подключить бота" in btn.text and btn.url == "tg://settings/edit"
         for row in kb_disconnected.inline_keyboard
         for btn in row
     )
@@ -200,6 +200,13 @@ def test_inline_keyboards():
 
     kb_back = get_back_keyboard()
     assert kb_back.inline_keyboard[0][0].callback_data == "btn_menu"
+
+    kb_back_settings = get_back_keyboard(include_settings_link=True)
+    assert any(
+        btn.url == "tg://settings/edit"
+        for row in kb_back_settings.inline_keyboard
+        for btn in row
+    )
 
 
 def test_models_serialization():

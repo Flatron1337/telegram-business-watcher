@@ -167,7 +167,9 @@ async def cb_connect_info(
 
     if callback.message:
         await callback.message.edit_text(
-            text, reply_markup=get_back_keyboard(), parse_mode="html"
+            text,
+            reply_markup=get_back_keyboard(include_settings_link=True),
+            parse_mode="html",
         )
     await callback.answer()
 
@@ -179,17 +181,19 @@ async def cb_instructions(callback: CallbackQuery, bot: Bot):
 
     text = (
         "📖 <b>Пошаговая инструкция по подключению:</b>\n\n"
-        "1️⃣ Зайдите в официальный клиент Telegram (или exteraGram) на смартфоне.\n"
-        "2️⃣ Откройте <b>Настройки ➔ Автоматизация чатов</b>.\n"
+        "1️⃣ Нажмите кнопку ниже <b>«⚙️ Открыть настройки аккаунта»</b>.\n"
+        "2️⃣ Перейдите в <b>Автоматизация чатов</b>.\n"
         f"3️⃣ Введите юзернейм бота: <code>@{bot_username}</code>\n"
         "4️⃣ Выберите, в каких чатах бот будет работать (по умолчанию: <i>Все личные чаты</i>).\n"
         "5️⃣ Сохраните настройки.\n\n"
-        "🛡 <i>Безопасность: бот работает локально на вашем компьютере, "
-        "и ваши сообщения не передаются третьим лицам!</i>"
+        "🛡 <i>Безопасность: бот сохраняет сообщения в защищённый персональный кэш, "
+        "и ваши данные не передаются посторонним!</i>"
     )
     if callback.message:
         await callback.message.edit_text(
-            text, reply_markup=get_back_keyboard(), parse_mode="html"
+            text,
+            reply_markup=get_back_keyboard(include_settings_link=True),
+            parse_mode="html",
         )
     await callback.answer()
 
@@ -221,7 +225,9 @@ async def cb_settings(callback: CallbackQuery):
     )
     if callback.message:
         await callback.message.edit_text(
-            text, reply_markup=get_back_keyboard(), parse_mode="html"
+            text,
+            reply_markup=get_back_keyboard(include_settings_link=True),
+            parse_mode="html",
         )
     await callback.answer()
 
