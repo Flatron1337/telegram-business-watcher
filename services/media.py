@@ -169,19 +169,21 @@ async def send_media_attachment(
     media_type: str | None,
     file_id: str | None,
     caption: str | None = None,
-) -> None:
+) -> bool:
     """Sends a media file attachment to a chat with optional caption."""
     if not media_type or not file_id:
-        return
+        return False
 
     sender = MEDIA_SENDERS.get(media_type)
     if not sender:
-        return
+        return False
 
     try:
         await safe_telegram_call(sender, bot, chat_id, file_id, caption)
+        return True
     except TelegramAPIError as e:
         logger.error("Failed to send media attachment (%s): %s", media_type, e)
+        return False
 
 
 async def deliver_deleted_media(

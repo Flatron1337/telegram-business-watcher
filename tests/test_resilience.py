@@ -3,7 +3,11 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
-from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
 from aiogram.types import BufferedInputFile
 
 from config.settings import Settings
@@ -22,6 +26,7 @@ class DummyBot:
     def __init__(self):
         self.sent_messages: list[dict] = []
         self.sent_photos: list[dict] = []
+        self.download_exception: Exception | None = None
 
     async def send_message(self, chat_id: int, text: str, **kwargs):
         self.sent_messages.append({"chat_id": chat_id, "text": text, **kwargs})
@@ -30,6 +35,8 @@ class DummyBot:
         self.sent_photos.append({"chat_id": chat_id, "photo": photo, **kwargs})
 
     async def download(self, file_id: str, destination=None):
+        if self.download_exception:
+            raise self.download_exception
         if destination:
             destination.write(b"fake_image_content_bytes")
             destination.seek(0)
@@ -273,33 +280,36 @@ def _build_view_once_messages():
     return reply, msg1, msg2
 
 
+async def _setup_test_env(conn_id: str = "conn_vo"):
+    db = Database(":memory:")
+    sql_conn = await db.connect()
+    repo = BusinessRepository(sql_conn, MockRedis())
+    conn = BusinessConnectionModel(
+        connection_id=conn_id,
+        user_id=100,
+        user_chat_id=100,
+        can_reply=True,
+        is_enabled=True,
+        connected_at=1700000000,
+    )
+    await repo.save_connection(conn)
+    settings = Settings(
+        bot_token="123456:ABC-DEF",
+        allowed_user_ids=[100],
+        allowed_usernames=[],
+    )
+    return db, repo, settings
+
+
 def test_view_once_media_interception_via_reply():
     """Verifies reply to view-once media downloads to RAM, sends card, and deduplicates in DB."""
 
     async def _run():
-        db = Database(":memory:")
-        sql_conn = await db.connect()
-        mock_redis = MockRedis()
-        repo = BusinessRepository(sql_conn, mock_redis)
+        db, repo, settings = await _setup_test_env("conn_vo")
         bot = DummyBot()
-        settings = Settings(
-            bot_token="123456:ABC-DEF",
-            allowed_user_ids=[100],
-            allowed_usernames=[],
-        )
 
         try:
-            conn = BusinessConnectionModel(
-                connection_id="conn_vo",
-                user_id=100,
-                user_chat_id=100,
-                can_reply=True,
-                is_enabled=True,
-                connected_at=1700000000,
-            )
-            await repo.save_connection(conn)
             _reply, msg1, msg2 = _build_view_once_messages()
-
             await on_business_message(msg1, bot, repo, settings)
 
             # 1. Report card assertions
@@ -330,7 +340,42 @@ def test_view_once_media_interception_via_reply():
 
             assert len(bot.sent_messages) == 0
             assert len(bot.sent_photos) == 0
+        finally:
+            await db.close()
 
+    asyncio.run(_run())
+
+
+def test_view_once_media_large_file_fallback_on_download_error():
+    """Verifies fallback sends report card and attempts send_media_attachment by file_id on >20MB error."""
+
+    async def _run():
+        db, repo, settings = await _setup_test_env("conn_vo_large")
+        bot = DummyBot()
+        bot.download_exception = TelegramAPIError(
+            method="downloadFile", message="Bad Request: file is too big"
+        )
+
+        try:
+            _reply, msg1, _ = _build_view_once_messages()
+            msg1.business_connection_id = "conn_vo_large"
+
+            await on_business_message(msg1, bot, repo, settings)
+
+            # 1. HTML card sent despite download failure
+            assert len(bot.sent_messages) == 1
+            assert (
+                "🔥 <b>ПЕРЕХВАЧЕНО ОДНОРАЗОВОЕ МЕДИА</b>"
+                in bot.sent_messages[0]["text"]
+            )
+
+            # 2. Fallback to direct file_id dispatch
+            assert len(bot.sent_photos) == 1
+            assert bot.sent_photos[0]["photo"] == "vo_photo_id"
+
+            # 3. Message persisted in DB to avoid duplicate loops
+            saved = await repo.get_message("conn_vo_large", 555, 999)
+            assert saved is not None
         finally:
             await db.close()
 

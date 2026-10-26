@@ -11,7 +11,11 @@ from aiogram.types import BufferedInputFile, LinkPreviewOptions, Message
 from database.models import BusinessConnectionModel, BusinessMessageModel
 from database.repository import REDIS_EXCEPTIONS, BusinessRepository
 from services.formatter import BusinessReportFormatter
-from services.media import extract_media, safe_telegram_call
+from services.media import (
+    extract_media,
+    safe_telegram_call,
+    send_media_attachment,
+)
 from utils.logging import setup_logger
 
 logger = setup_logger("business.services.view_once")
@@ -92,6 +96,47 @@ def _to_timestamp(dt: Any) -> int:
     return int(time.time())
 
 
+async def _handle_large_view_once_fallback(
+    bot: Bot,
+    chat_id: int,
+    msg: BusinessMessageModel,
+    report: str,
+) -> bool:
+    """Fallback delivery for large view-once files exceeding Bot API download limits (>20 MB)."""
+    try:
+        await safe_telegram_call(
+            bot.send_message,
+            chat_id,
+            report,
+            parse_mode="html",
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        )
+    except TelegramAPIError as e:
+        logger.error("Failed to send fallback view-once report card: %s", e)
+
+    sent = False
+    try:
+        sent = await send_media_attachment(
+            bot, chat_id, msg.media_type, msg.media_file_id
+        )
+    except TelegramAPIError as e:
+        logger.warning("Direct send by file_id failed for large view-once: %s", e)
+        sent = False
+
+    if not sent:
+        try:
+            await safe_telegram_call(
+                bot.send_message,
+                chat_id,
+                "⚠️ <i>Не удалось скачать оригинал: размер файла превышает лимит 20 МБ Telegram Bot API.</i>",
+                parse_mode="html",
+            )
+        except TelegramAPIError as e:
+            logger.error("Failed to send 20MB warning: %s", e)
+
+    return True
+
+
 async def deliver_view_once_media(
     bot: Bot,
     chat_id: int,
@@ -101,10 +146,19 @@ async def deliver_view_once_media(
     if not msg.media_type or not msg.media_file_id:
         return False
 
+    report = BusinessReportFormatter.format_view_once_report(msg)
+
     buffer = io.BytesIO()
     try:
         await bot.download(msg.media_file_id, destination=buffer)
-    except (TelegramAPIError, OSError) as e:
+    except TelegramAPIError as e:
+        logger.warning(
+            "Download failed with TelegramAPIError for view-once %s: %s; falling back",
+            msg.media_file_id,
+            e,
+        )
+        return await _handle_large_view_once_fallback(bot, chat_id, msg, report)
+    except OSError as e:
         logger.error("Failed to download view-once media %s: %s", msg.media_file_id, e)
         return False
 
@@ -116,8 +170,6 @@ async def deliver_view_once_media(
     ext = MEDIA_EXTENSIONS.get(msg.media_type, ".bin")
     filename = f"view_once_{msg.chat_id}_{msg.message_id}{ext}"
     input_file = BufferedInputFile(content_bytes, filename=filename)
-
-    report = BusinessReportFormatter.format_view_once_report(msg)
 
     try:
         await safe_telegram_call(
