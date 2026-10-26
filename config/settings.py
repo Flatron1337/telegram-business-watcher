@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     render_external_url: str | None = None
     ping_interval_seconds: int = 300
     allowed_user_ids: list[int] = [965180470]
+    last_business_connection_id: str | None = None
+    redis_url: str | None = None
 
     @field_validator("allowed_user_ids", mode="before")
     @classmethod

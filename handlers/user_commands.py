@@ -1,10 +1,18 @@
+import re
+import time
+
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 
+from config.settings import Settings
+from database.models import BusinessConnectionModel
 from database.repository import BusinessRepository
 from keyboards.inline import get_back_keyboard, get_main_keyboard
+from utils.logging import setup_logger
 
+logger = setup_logger("business.user_commands")
 router = Router(name="user_commands")
 
 
@@ -26,14 +34,77 @@ def _get_welcome_text(
     )
 
 
+async def _resolve_user_connection(
+    bot: Bot,
+    repository: BusinessRepository,
+    settings: Settings,
+    user_id: int,
+) -> bool:
+    """Checks if the user has an active business connection, restoring from Telegram API if needed."""
+    conn = await repository.get_connection_by_user(user_id)
+    if conn and conn.is_enabled:
+        return True
+
+    candidate_ids: list[str] = []
+    if settings.last_business_connection_id:
+        candidate_ids.append(settings.last_business_connection_id)
+
+    try:
+        chat = await bot.get_chat(user_id)
+        if chat.pinned_message and chat.pinned_message.text:
+            match = re.search(
+                r"BUSINESS_CONN:([A-Za-z0-9_-]+)", chat.pinned_message.text
+            )
+            if match:
+                candidate_ids.append(match.group(1))
+    except (TelegramAPIError, OSError) as e:
+        logger.debug("Chat pinned inspect error for user %s: %s", user_id, e)
+
+    for c_id in candidate_ids:
+        try:
+            tg_conn = await bot.get_business_connection(c_id)
+            if (
+                tg_conn
+                and tg_conn.is_enabled
+                and tg_conn.user.id == user_id
+                and settings.is_user_allowed(tg_conn.user.id)
+            ):
+                conn_date = int(
+                    tg_conn.date.timestamp()
+                    if hasattr(tg_conn.date, "timestamp")
+                    else tg_conn.date or time.time()
+                )
+                conn_model = BusinessConnectionModel(
+                    connection_id=tg_conn.id,
+                    user_id=tg_conn.user.id,
+                    user_chat_id=tg_conn.user_chat_id,
+                    can_reply=bool(tg_conn.can_reply),
+                    is_enabled=bool(tg_conn.is_enabled),
+                    connected_at=conn_date,
+                )
+                await repository.save_connection(conn_model)
+                logger.info(
+                    "Auto-restored user connection %s from Telegram API on user command",
+                    tg_conn.id,
+                )
+                return True
+        except TelegramAPIError as e:
+            logger.debug("Candidate %s validation error: %s", c_id, e)
+
+    return False
+
+
 @router.message(CommandStart())
 @router.message(Command("menu"))
-async def cmd_start(message: Message, bot: Bot, repository: BusinessRepository):
+async def cmd_start(
+    message: Message, bot: Bot, repository: BusinessRepository, settings: Settings
+):
     bot_info = await bot.get_me()
     bot_username = bot_info.username or "bot"
 
-    conn = await repository.get_connection_by_user(message.from_user.id)
-    is_connected = bool(conn and conn.is_enabled)
+    is_connected = await _resolve_user_connection(
+        bot, repository, settings, message.from_user.id
+    )
 
     text = _get_welcome_text(message.from_user.first_name, is_connected, bot_username)
     keyboard = get_main_keyboard(is_connected, bot_username)
@@ -42,12 +113,18 @@ async def cmd_start(message: Message, bot: Bot, repository: BusinessRepository):
 
 
 @router.callback_query(F.data == "btn_menu")
-async def cb_menu(callback: CallbackQuery, bot: Bot, repository: BusinessRepository):
+async def cb_menu(
+    callback: CallbackQuery,
+    bot: Bot,
+    repository: BusinessRepository,
+    settings: Settings,
+):
     bot_info = await bot.get_me()
     bot_username = bot_info.username or "bot"
 
-    conn = await repository.get_connection_by_user(callback.from_user.id)
-    is_connected = bool(conn and conn.is_enabled)
+    is_connected = await _resolve_user_connection(
+        bot, repository, settings, callback.from_user.id
+    )
 
     text = _get_welcome_text(callback.from_user.first_name, is_connected, bot_username)
     keyboard = get_main_keyboard(is_connected, bot_username)
@@ -59,13 +136,17 @@ async def cb_menu(callback: CallbackQuery, bot: Bot, repository: BusinessReposit
 
 @router.callback_query(F.data == "btn_connect_info")
 async def cb_connect_info(
-    callback: CallbackQuery, bot: Bot, repository: BusinessRepository
+    callback: CallbackQuery,
+    bot: Bot,
+    repository: BusinessRepository,
+    settings: Settings,
 ):
     bot_info = await bot.get_me()
     bot_username = bot_info.username or "bot"
 
-    conn = await repository.get_connection_by_user(callback.from_user.id)
-    is_connected = bool(conn and conn.is_enabled)
+    is_connected = await _resolve_user_connection(
+        bot, repository, settings, callback.from_user.id
+    )
 
     if is_connected:
         text = (

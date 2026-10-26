@@ -103,25 +103,73 @@ async def on_business_connection(
             "🎉 <b>Бот успешно привязан к вашему аккаунту!</b>\n\n"
             "С этого момента я фиксирую все входящие и исходящие сообщения в ваших личных чатах.\n"
             "Если собеседник удалит или отредактирует сообщение, голосовое или кружок — "
-            "вы моментально получите отчёт прямо сюда."
+            "вы моментально получите отчёт прямо сюда.\n\n"
+            f"📌 <i>Служебная привязка:</i> <code>BUSINESS_CONN:{connection.id}</code>"
         )
         try:
-            await bot.send_message(connection.user_chat_id, text, parse_mode="html")
+            sent_msg = await bot.send_message(
+                connection.user_chat_id, text, parse_mode="html"
+            )
+            await bot.pin_chat_message(
+                chat_id=connection.user_chat_id,
+                message_id=sent_msg.message_id,
+                disable_notification=True,
+            )
         except TelegramAPIError as e:
             logger.warning(
-                "Could not send confirmation to user %s: %s", connection.user_chat_id, e
+                "Could not send/pin confirmation to user %s: %s",
+                connection.user_chat_id,
+                e,
             )
+
+
+async def ensure_business_connection(
+    bot: Bot,
+    repository: BusinessRepository,
+    settings: Settings,
+    connection_id: str,
+) -> BusinessConnectionModel | None:
+    """Retrieves business connection from repository, auto-restoring from Telegram API if absent."""
+    conn = await repository.get_connection_by_id(connection_id)
+    if conn and conn.is_enabled:
+        return conn
+
+    try:
+        tg_conn = await bot.get_business_connection(connection_id)
+        if tg_conn and tg_conn.is_enabled and settings.is_user_allowed(tg_conn.user.id):
+            conn = BusinessConnectionModel(
+                connection_id=tg_conn.id,
+                user_id=tg_conn.user.id,
+                user_chat_id=tg_conn.user_chat_id,
+                can_reply=bool(tg_conn.can_reply),
+                is_enabled=bool(tg_conn.is_enabled),
+                connected_at=_to_timestamp(tg_conn.date),
+            )
+            await repository.save_connection(conn)
+            logger.info(
+                "Auto-restored business connection from Telegram API: user_id=%s, id=%s",
+                tg_conn.user.id,
+                tg_conn.id,
+            )
+            return conn
+    except TelegramAPIError as e:
+        logger.warning(
+            "Could not auto-restore business connection %s: %s", connection_id, e
+        )
+    return None
 
 
 @router.business_message()
 async def on_business_message(
-    message: Message, repository: BusinessRepository, settings: Settings
+    message: Message, bot: Bot, repository: BusinessRepository, settings: Settings
 ):
     """Caches incoming and outgoing messages from business chats."""
     if not message.business_connection_id:
         return
 
-    conn = await repository.get_connection_by_id(message.business_connection_id)
+    conn = await ensure_business_connection(
+        bot, repository, settings, message.business_connection_id
+    )
     if not conn or not conn.is_enabled or not settings.is_user_allowed(conn.user_id):
         return
 
@@ -172,7 +220,9 @@ async def on_edited_business_message(
     if not message.business_connection_id:
         return
 
-    conn = await repository.get_connection_by_id(message.business_connection_id)
+    conn = await ensure_business_connection(
+        bot, repository, settings, message.business_connection_id
+    )
     if not conn or not conn.is_enabled or not settings.is_user_allowed(conn.user_id):
         return
 
@@ -277,7 +327,9 @@ async def on_deleted_business_messages(
     settings: Settings,
 ):
     """Fired when messages in a business chat are deleted."""
-    conn = await repository.get_connection_by_id(event.business_connection_id)
+    conn = await ensure_business_connection(
+        bot, repository, settings, event.business_connection_id
+    )
     if not conn or not conn.is_enabled or not settings.is_user_allowed(conn.user_id):
         return
 

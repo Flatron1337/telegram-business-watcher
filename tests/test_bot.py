@@ -200,3 +200,110 @@ def test_inline_keyboards():
 
     kb_back = get_back_keyboard()
     assert kb_back.inline_keyboard[0][0].callback_data == "btn_menu"
+
+
+def test_models_serialization():
+    """Verify to_dict and from_dict for BusinessConnectionModel and BusinessMessageModel."""
+    conn = BusinessConnectionModel(
+        connection_id="conn_abc",
+        user_id=12345,
+        user_chat_id=12345,
+        can_reply=True,
+        is_enabled=True,
+        connected_at=1700000000,
+    )
+    d_conn = conn.to_dict()
+    restored_conn = BusinessConnectionModel.from_dict(d_conn)
+    assert restored_conn.connection_id == "conn_abc"
+    assert restored_conn.user_id == 12345
+    assert restored_conn.is_enabled is True
+
+    msg = BusinessMessageModel(
+        connection_id="conn_abc",
+        chat_id=777,
+        message_id=999,
+        sender_id=12345,
+        sender_name="Alice",
+        date=1700000500,
+        text="Test cache",
+        media_type="photo",
+        media_file_id="photo_123",
+    )
+    d_msg = msg.to_dict()
+    restored_msg = BusinessMessageModel.from_dict(d_msg)
+    assert restored_msg.connection_id == "conn_abc"
+    assert restored_msg.text == "Test cache"
+    assert restored_msg.media_type == "photo"
+
+
+def test_repository_with_mock_redis():
+    """Verify repository dual-write and fallback recovery using simulated Redis cache."""
+
+    class MockRedis:
+        def __init__(self):
+            self.store = {}
+
+        async def get(self, key):
+            return self.store.get(key)
+
+        async def set(self, key, val, **kwargs):
+            self.store[key] = val
+
+        async def delete(self, key):
+            self.store.pop(key, None)
+
+    async def _run():
+        db = Database(":memory:")
+        conn = await db.connect()
+        mock_redis = MockRedis()
+        repo = BusinessRepository(conn, redis_client=mock_redis)
+
+        try:
+            # 1. Save connection -> writes to SQLite + Redis
+            conn_model = BusinessConnectionModel(
+                connection_id="conn_redis_1",
+                user_id=8888,
+                user_chat_id=8888,
+                can_reply=True,
+                is_enabled=True,
+                connected_at=1700000000,
+            )
+            await repo.save_connection(conn_model)
+            assert "biz:conn:conn_redis_1" in mock_redis.store
+            assert "biz:user_conn:8888" in mock_redis.store
+
+            # 2. Simulate wiping SQLite table (like Render restart)
+            await conn.execute("DELETE FROM business_connections")
+            await conn.commit()
+
+            # 3. Retrieve from repo -> falls back to Redis and restores to SQLite!
+            recovered_conn = await repo.get_connection_by_user(8888)
+            assert recovered_conn is not None
+            assert recovered_conn.connection_id == "conn_redis_1"
+
+            # 4. Save message -> writes to SQLite + Redis
+            msg = BusinessMessageModel(
+                connection_id="conn_redis_1",
+                chat_id=444,
+                message_id=555,
+                sender_id=8888,
+                sender_name="RedisUser",
+                date=1700001000,
+                text="Persistent message",
+            )
+            await repo.save_message(msg)
+            msg_key = "biz:msg:conn_redis_1:444:555"
+            assert msg_key in mock_redis.store
+
+            # 5. Simulate wiping messages table
+            await conn.execute("DELETE FROM business_messages")
+            await conn.commit()
+
+            # 6. Retrieve -> recovers from Redis!
+            recovered_msg = await repo.get_message("conn_redis_1", 444, 555)
+            assert recovered_msg is not None
+            assert recovered_msg.text == "Persistent message"
+        finally:
+            await db.close()
+
+    asyncio.run(_run())

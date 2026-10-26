@@ -1,15 +1,36 @@
+import json
 import time
+from typing import Any
 
 import aiosqlite
 
+from utils.logging import setup_logger
+
 from .models import BusinessConnectionModel, BusinessMessageModel
+
+try:
+    from redis.exceptions import RedisError
+except ImportError:
+
+    class RedisError(Exception):
+        pass
+
+
+REDIS_EXCEPTIONS = (RedisError, json.JSONDecodeError, TypeError, OSError, KeyError)
+
+logger = setup_logger("business.repository")
 
 
 class BusinessRepository:
-    """Repository handling database operations for business bot."""
+    """Repository handling database operations for business bot with SQLite and optional Redis cache."""
 
-    def __init__(self, db_conn: aiosqlite.Connection):
+    def __init__(
+        self,
+        db_conn: aiosqlite.Connection,
+        redis_client: Any | None = None,
+    ):
         self.conn = db_conn
+        self.redis = redis_client
 
     def _row_to_connection(self, row: aiosqlite.Row) -> BusinessConnectionModel:
         return BusinessConnectionModel(
@@ -59,13 +80,38 @@ class BusinessRepository:
         )
         await self.conn.commit()
 
+        if self.redis:
+            try:
+                conn_data = json.dumps(conn.to_dict())
+                await self.redis.set(f"biz:conn:{conn.connection_id}", conn_data)
+                if conn.is_enabled:
+                    await self.redis.set(f"biz:user_conn:{conn.user_id}", conn_data)
+                else:
+                    await self.redis.delete(f"biz:user_conn:{conn.user_id}")
+            except REDIS_EXCEPTIONS as e:
+                logger.debug("Redis cache write error (conn): %s", e)
+
     async def get_connection_by_id(
         self, connection_id: str
     ) -> BusinessConnectionModel | None:
         query = "SELECT * FROM business_connections WHERE connection_id = ? LIMIT 1"
         cursor = await self.conn.execute(query, (connection_id,))
         row = await cursor.fetchone()
-        return self._row_to_connection(row) if row else None
+        if row:
+            return self._row_to_connection(row)
+
+        if self.redis:
+            try:
+                raw = await self.redis.get(f"biz:conn:{connection_id}")
+                if raw:
+                    data = json.loads(raw)
+                    model = BusinessConnectionModel.from_dict(data)
+                    await self.save_connection(model)
+                    return model
+            except REDIS_EXCEPTIONS as e:
+                logger.debug("Redis cache read error (conn_id): %s", e)
+
+        return None
 
     async def get_connection_by_user(
         self, user_id: int
@@ -77,7 +123,21 @@ class BusinessRepository:
         """
         cursor = await self.conn.execute(query, (user_id,))
         row = await cursor.fetchone()
-        return self._row_to_connection(row) if row else None
+        if row:
+            return self._row_to_connection(row)
+
+        if self.redis:
+            try:
+                raw = await self.redis.get(f"biz:user_conn:{user_id}")
+                if raw:
+                    data = json.loads(raw)
+                    model = BusinessConnectionModel.from_dict(data)
+                    await self.save_connection(model)
+                    return model
+            except REDIS_EXCEPTIONS as e:
+                logger.debug("Redis cache read error (user_conn): %s", e)
+
+        return None
 
     async def save_message(self, msg: BusinessMessageModel) -> None:
         query = """
@@ -108,6 +168,15 @@ class BusinessRepository:
         )
         await self.conn.commit()
 
+        if self.redis:
+            try:
+                msg_key = f"biz:msg:{msg.connection_id}:{msg.chat_id}:{msg.message_id}"
+                raw_json = json.dumps(msg.to_dict())
+                # Cache messages for 14 days in Redis
+                await self.redis.set(msg_key, raw_json, ex=14 * 86400)
+            except REDIS_EXCEPTIONS as e:
+                logger.debug("Redis cache write error (msg): %s", e)
+
     async def get_message(
         self, connection_id: str, chat_id: int, message_id: int
     ) -> BusinessMessageModel | None:
@@ -118,7 +187,23 @@ class BusinessRepository:
         """
         cursor = await self.conn.execute(query, (connection_id, chat_id, message_id))
         row = await cursor.fetchone()
-        return self._row_to_message(row) if row else None
+        if row:
+            return self._row_to_message(row)
+
+        if self.redis:
+            try:
+                msg_key = f"biz:msg:{connection_id}:{chat_id}:{message_id}"
+                raw = await self.redis.get(msg_key)
+                if raw:
+                    data = json.loads(raw)
+                    model = BusinessMessageModel.from_dict(data)
+                    # Re-populate local SQLite database cache
+                    await self.save_message(model)
+                    return model
+            except REDIS_EXCEPTIONS as e:
+                logger.debug("Redis cache read error (msg): %s", e)
+
+        return None
 
     async def record_edit(
         self,
@@ -149,6 +234,17 @@ class BusinessRepository:
         )
         await self.conn.commit()
 
+        if self.redis:
+            try:
+                msg_key = f"biz:msg:{connection_id}:{chat_id}:{message_id}"
+                raw = await self.redis.get(msg_key)
+                if raw:
+                    data = json.loads(raw)
+                    data["text"] = new_text
+                    await self.redis.set(msg_key, json.dumps(data), ex=14 * 86400)
+            except REDIS_EXCEPTIONS as e:
+                logger.debug("Redis cache update error (edit): %s", e)
+
     async def mark_deleted(
         self,
         connection_id: str,
@@ -164,11 +260,25 @@ class BusinessRepository:
         query = (
             "UPDATE business_messages SET is_deleted = 1, deleted_at = ? WHERE id = ?"
         )
-        await self.conn.execute(query, (del_time, msg.id))
-        await self.conn.commit()
+        if msg.id:
+            await self.conn.execute(query, (del_time, msg.id))
+            await self.conn.commit()
 
         msg.is_deleted = True
         msg.deleted_at = del_time
+
+        if self.redis:
+            try:
+                msg_key = f"biz:msg:{connection_id}:{chat_id}:{message_id}"
+                raw = await self.redis.get(msg_key)
+                if raw:
+                    data = json.loads(raw)
+                    data["is_deleted"] = True
+                    data["deleted_at"] = del_time
+                    await self.redis.set(msg_key, json.dumps(data), ex=14 * 86400)
+            except REDIS_EXCEPTIONS as e:
+                logger.debug("Redis cache update error (delete): %s", e)
+
         return msg
 
     async def get_stats(self, user_id: int) -> dict[str, int]:

@@ -10,14 +10,19 @@ root_dir = Path(__file__).resolve().parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
+import re
+import time
+
 import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError
 from aiohttp import web
 
 from config.settings import Settings, get_settings
 from database.connection import Database
+from database.models import BusinessConnectionModel
 from database.repository import BusinessRepository
 from handlers import business_router, user_commands_router
 from middlewares import AuthMiddleware
@@ -116,6 +121,57 @@ async def keep_alive_task(ping_url: str, interval: int = 300) -> None:
                 break
 
 
+async def restore_startup_state(
+    bot: Bot, repository: BusinessRepository, settings: Settings
+) -> None:
+    """Pre-warms local SQLite database with active business connections on startup."""
+    target_ids: list[str] = []
+    if settings.last_business_connection_id:
+        target_ids.append(settings.last_business_connection_id)
+
+    for uid in settings.allowed_user_ids:
+        try:
+            chat = await bot.get_chat(uid)
+            if chat.pinned_message and chat.pinned_message.text:
+                match = re.search(
+                    r"BUSINESS_CONN:([A-Za-z0-9_-]+)", chat.pinned_message.text
+                )
+                if match:
+                    target_ids.append(match.group(1))
+        except (TelegramAPIError, OSError) as e:
+            logger.debug("Chat inspect for user %s: %s", uid, e)
+
+    for c_id in set(target_ids):
+        try:
+            tg_conn = await bot.get_business_connection(c_id)
+            if (
+                tg_conn
+                and tg_conn.is_enabled
+                and settings.is_user_allowed(tg_conn.user.id)
+            ):
+                conn_date = int(
+                    tg_conn.date.timestamp()
+                    if hasattr(tg_conn.date, "timestamp")
+                    else tg_conn.date or time.time()
+                )
+                conn_model = BusinessConnectionModel(
+                    connection_id=tg_conn.id,
+                    user_id=tg_conn.user.id,
+                    user_chat_id=tg_conn.user_chat_id,
+                    can_reply=bool(tg_conn.can_reply),
+                    is_enabled=bool(tg_conn.is_enabled),
+                    connected_at=conn_date,
+                )
+                await repository.save_connection(conn_model)
+                logger.info(
+                    "Restored active business connection on startup: %s (user=%s)",
+                    tg_conn.id,
+                    tg_conn.user.id,
+                )
+        except TelegramAPIError as e:
+            logger.warning("Could not restore startup connection %s: %s", c_id, e)
+
+
 async def run_bot() -> None:
     """Main async entrypoint for the Telegram Business Watcher bot."""
     settings = load_settings()
@@ -124,7 +180,26 @@ async def run_bot() -> None:
     db_path = Path(__file__).parent / settings.db_path
     database = Database(db_path)
     db_conn = await database.connect()
-    repository = BusinessRepository(db_conn)
+
+    redis_client = None
+    if settings.redis_url:
+        try:
+            import redis.asyncio as aioredis
+            from redis.exceptions import RedisError
+
+            redis_client = aioredis.from_url(
+                settings.redis_url,
+                encoding="utf-8",
+                decode_responses=True,
+                socket_timeout=5,
+            )
+            await redis_client.ping()
+            logger.info("Connected to Redis persistent cache.")
+        except (RedisError, OSError, TimeoutError) as e:
+            logger.warning("Redis persistent cache unavailable: %s", e)
+            redis_client = None
+
+    repository = BusinessRepository(db_conn, redis_client=redis_client)
 
     cleanup_task = asyncio.create_task(
         periodic_cleanup_task(repository, settings.retention_days)
@@ -156,6 +231,7 @@ async def run_bot() -> None:
             bot_info.id,
             bot_info.first_name,
         )
+        await restore_startup_state(bot, repository, settings)
         logger.info("Listening for Telegram Business events and user commands...")
 
         await dp.start_polling(
@@ -175,6 +251,9 @@ async def run_bot() -> None:
         cleanup_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await cleanup_task
+        if redis_client:
+            with contextlib.suppress(OSError, TimeoutError):
+                await redis_client.aclose()
         await bot.session.close()
         await database.close()
         logger.info("Shutdown complete.")
