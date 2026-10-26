@@ -28,7 +28,11 @@ class BusinessReportFormatter:
 
     @staticmethod
     def _format_date(timestamp: int) -> str:
-        return datetime.fromtimestamp(timestamp, tz=UTC).strftime("%d.%m.%Y %H:%M:%S")
+        safe_ts = max(0, min(timestamp, 253402300799))
+        try:
+            return datetime.fromtimestamp(safe_ts, tz=UTC).strftime("%d.%m.%Y %H:%M:%S")
+        except (OSError, OverflowError, ValueError):
+            return "01.01.1970 00:00:00"
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
@@ -42,14 +46,19 @@ class BusinessReportFormatter:
             return f"{m} мин. {s} сек." if s else f"{m} мин."
         h, rem = divmod(safe_seconds, 3600)
         m = rem // 60
-        return f"{h} ч. {m} мин."
+        if h < 24:
+            return f"{h} ч. {m} мин." if m else f"{h} ч."
+        d, h = divmod(h, 24)
+        return f"{d} дн. {h} ч."
 
     @classmethod
     def _format_user(cls, user_id: int, name: str, username: str | None) -> str:
-        name_esc = html.escape(name or "Пользователь")
+        safe_name = (name or "Пользователь")[:128]
+        name_esc = html.escape(safe_name)
         user_link = f'<a href="tg://user?id={user_id}"><b>{name_esc}</b></a>'
         if username:
-            return f"{user_link} (@{html.escape(username)})"
+            safe_user = username[:64]
+            return f"{user_link} (@{html.escape(safe_user)})"
         return user_link
 
     @classmethod
@@ -96,7 +105,7 @@ class BusinessReportFormatter:
         sender_str = cls._format_user(
             msg.sender_id, msg.sender_name, msg.sender_username
         )
-        chat_name = html.escape(msg.chat_title or "Личный диалог")
+        chat_name = html.escape((msg.chat_title or "Личный диалог")[:128])
 
         header_lines = [
             "🗑 <b>УДАЛЁННОЕ СООБЩЕНИЕ</b>",
@@ -203,7 +212,7 @@ class BusinessReportFormatter:
         sender_str = cls._format_user(
             msg.sender_id, msg.sender_name, msg.sender_username
         )
-        chat_name = html.escape(msg.chat_title or "Личный диалог")
+        chat_name = html.escape((msg.chat_title or "Личный диалог")[:128])
 
         header_lines = [
             "✏️ <b>ИЗМЕНЁННОЕ СООБЩЕНИЕ</b>",
