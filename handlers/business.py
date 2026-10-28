@@ -21,6 +21,7 @@ from services.media import (
     extract_media,
     safe_telegram_call,
 )
+from services.reactor_service import apply_auto_reaction
 from services.view_once import handle_view_once_reply
 from utils.logging import setup_logger
 
@@ -201,6 +202,7 @@ async def on_business_message(
         message.chat.id,
         message.message_id,
     )
+    await apply_auto_reaction(bot, message, repository, settings, conn.user_id)
 
 
 @router.edited_business_message()

@@ -24,7 +24,7 @@ class Database:
             await self._connection.execute("PRAGMA synchronous=NORMAL;")
             await self._connection.execute("PRAGMA busy_timeout=5000;")
 
-            await self._init_schema()
+            await self.init_db()
             logger.info("Database connection established: %s", self.db_path)
 
         return self._connection
@@ -34,6 +34,9 @@ class Database:
             await self._connection.close()
             self._connection = None
             logger.info("Database connection closed.")
+
+    async def init_db(self) -> None:
+        await self._init_schema()
 
     async def _init_schema(self) -> None:
         assert self._connection is not None
@@ -75,6 +78,16 @@ class Database:
             old_text TEXT NOT NULL,
             new_text TEXT NOT NULL,
             edited_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS reactor_settings (
+            owner_id INTEGER PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            emoji TEXT NOT NULL DEFAULT '❤️\u200d🔥',
+            is_big INTEGER NOT NULL DEFAULT 1,
+            only_incoming INTEGER NOT NULL DEFAULT 1,
+            target_chat_ids TEXT NOT NULL DEFAULT '[]',
+            updated_at INTEGER NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_b_msg_lookup

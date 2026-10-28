@@ -1,5 +1,10 @@
 from .connection import Database
-from .models import BusinessConnectionModel, BusinessEditModel, BusinessMessageModel
+from .models import (
+    BusinessConnectionModel,
+    BusinessEditModel,
+    BusinessMessageModel,
+    ReactorConfig,
+)
 from .repository import BusinessRepository
 
 __all__ = [
@@ -8,4 +13,5 @@ __all__ = [
     "BusinessMessageModel",
     "BusinessRepository",
     "Database",
+    "ReactorConfig",
 ]

@@ -6,7 +6,7 @@ import aiosqlite
 
 from utils.logging import setup_logger
 
-from .models import BusinessConnectionModel, BusinessMessageModel
+from .models import BusinessConnectionModel, BusinessMessageModel, ReactorConfig
 
 try:
     from redis.exceptions import RedisError
@@ -43,25 +43,58 @@ class BusinessRepository:
         )
 
     def _row_to_message(self, row: aiosqlite.Row) -> BusinessMessageModel:
-        d = dict(row)
-        return BusinessMessageModel(
-            id=d.get("id"),
-            connection_id=d["connection_id"],
-            chat_id=d["chat_id"],
-            chat_title=d.get("chat_title"),
-            chat_username=d.get("chat_username"),
-            message_id=d["message_id"],
-            sender_id=d["sender_id"],
-            sender_name=d["sender_name"],
-            sender_username=d.get("sender_username"),
-            date=d["date"],
-            text=d.get("text"),
-            media_type=d.get("media_type"),
-            media_file_id=d.get("media_file_id"),
-            media_file_unique_id=d.get("media_file_unique_id"),
-            is_deleted=bool(d.get("is_deleted", False)),
-            deleted_at=d.get("deleted_at"),
+        return BusinessMessageModel.from_dict(dict(row))
+
+    def _row_to_reactor_config(self, row: aiosqlite.Row) -> ReactorConfig:
+        return ReactorConfig.from_dict(dict(row))
+
+    async def save_reactor_config(self, config: ReactorConfig) -> None:
+        config.updated_at = config.updated_at or int(time.time())
+        query = """
+        INSERT OR REPLACE INTO reactor_settings (
+            owner_id, enabled, emoji, is_big, only_incoming, target_chat_ids, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        await self.conn.execute(
+            query,
+            (
+                config.owner_id,
+                1 if config.enabled else 0,
+                config.emoji,
+                1 if config.is_big else 0,
+                1 if config.only_incoming else 0,
+                json.dumps(config.target_chat_ids),
+                config.updated_at,
+            ),
         )
+        await self.conn.commit()
+
+        if self.redis:
+            try:
+                await self.redis.set(
+                    f"biz:reactor:{config.owner_id}", json.dumps(config.to_dict())
+                )
+            except REDIS_EXCEPTIONS as e:
+                logger.debug("Redis cache write error (reactor): %s", e)
+
+    async def get_reactor_config(self, owner_id: int) -> ReactorConfig:
+        query = "SELECT * FROM reactor_settings WHERE owner_id = ? LIMIT 1"
+        cursor = await self.conn.execute(query, (owner_id,))
+        row = await cursor.fetchone()
+        if row:
+            return self._row_to_reactor_config(row)
+
+        if self.redis:
+            try:
+                raw = await self.redis.get(f"biz:reactor:{owner_id}")
+                if raw:
+                    model = ReactorConfig.from_dict(json.loads(raw))
+                    await self.save_reactor_config(model)
+                    return model
+            except REDIS_EXCEPTIONS as e:
+                logger.debug("Redis cache read error (reactor): %s", e)
+
+        return ReactorConfig(owner_id=owner_id, enabled=False)
 
     async def save_connection(self, conn: BusinessConnectionModel) -> None:
         query = """

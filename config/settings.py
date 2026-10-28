@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     render_external_url: str | None = None
     ping_interval_seconds: int = 300
     allowed_user_ids: str | list[int] = [965180470, 226583258]
+    reactor_owner_id: int = 965180470
     last_business_connection_id: str | None = None
     redis_url: str | None = None
 

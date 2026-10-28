@@ -26,6 +26,8 @@ class DummyBot:
     def __init__(self):
         self.sent_messages: list[dict] = []
         self.sent_photos: list[dict] = []
+        self.reactions: list[dict[str, Any]] = []
+        self.deleted_messages: list[tuple[int, int]] = []
         self.download_exception: Exception | None = None
 
     async def send_message(self, chat_id: int, text: str, **kwargs):
@@ -33,6 +35,29 @@ class DummyBot:
 
     async def send_photo(self, chat_id: int, photo: Any, **kwargs):
         self.sent_photos.append({"chat_id": chat_id, "photo": photo, **kwargs})
+
+    async def set_message_reaction(
+        self,
+        chat_id: int,
+        message_id: int,
+        reaction: list[Any],
+        is_big: bool = False,
+        **kw: Any,
+    ) -> bool:
+        self.reactions.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reaction": reaction,
+                "is_big": is_big,
+                **kw,
+            }
+        )
+        return True
+
+    async def delete_message(self, chat_id: int, message_id: int) -> bool:
+        self.deleted_messages.append((chat_id, message_id))
+        return True
 
     async def download(self, file_id: str, destination=None):
         if self.download_exception:
@@ -232,49 +257,46 @@ def test_welcome_text_escapes_html_and_attachment_deleted_branch():
 
 
 def _build_view_once_messages():
-    empty_media = dict.fromkeys(
-        ["video", "video_note", "voice", "audio", "document", "animation", "sticker"],
-        None,
-    )
+    keys = ["video", "video_note", "voice", "audio", "document", "animation", "sticker"]
+    empty_media = dict.fromkeys(keys, None)
     chat = SimpleNamespace(
         id=555, title="Secret Chat", full_name="Secret Chat", username=None
     )
+    sender = SimpleNamespace(
+        id=200, first_name="Agent", last_name="007", username="bond"
+    )
+    photo = [SimpleNamespace(file_id="vo_photo_id", file_unique_id="vo_photo_uid")]
     reply = SimpleNamespace(
         message_id=999,
         chat=chat,
-        photo=[SimpleNamespace(file_id="vo_photo_id", file_unique_id="vo_photo_uid")],
+        photo=photo,
         has_protected_content=True,
-        from_user=SimpleNamespace(
-            id=200, first_name="Agent", last_name="007", username="bond"
-        ),
+        from_user=sender,
         date=datetime.fromtimestamp(1700000000, tz=UTC),
         text=None,
         caption="Top secret snapshot",
         **empty_media,
     )
     user = SimpleNamespace(id=100, first_name="Me", last_name="", username="me")
+    base = {"business_connection_id": "conn_vo", "chat": chat, "from_user": user}
     msg1 = SimpleNamespace(
-        business_connection_id="conn_vo",
-        chat=chat,
         message_id=1001,
-        from_user=user,
         reply_to_message=reply,
         text="Catch it!",
         caption=None,
         photo=None,
         date=datetime.fromtimestamp(1700000010, tz=UTC),
+        **base,
         **empty_media,
     )
     msg2 = SimpleNamespace(
-        business_connection_id="conn_vo",
-        chat=chat,
         message_id=1002,
-        from_user=user,
         reply_to_message=reply,
         text="Second reply to same view-once message",
         caption=None,
         photo=None,
         date=datetime.fromtimestamp(1700000020, tz=UTC),
+        **base,
         **empty_media,
     )
     return reply, msg1, msg2

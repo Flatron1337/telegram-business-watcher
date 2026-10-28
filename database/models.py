@@ -1,4 +1,6 @@
-from dataclasses import asdict, dataclass
+import json
+import time
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -79,3 +81,45 @@ class BusinessEditModel:
     new_text: str
     edited_at: int
     id: int | None = None
+
+
+@dataclass
+class ReactorConfig:
+    owner_id: int
+    enabled: bool = False
+    emoji: str = "❤️\u200d🔥"
+    is_big: bool = True
+    only_incoming: bool = True
+    target_chat_ids: list[int] = field(default_factory=list)
+    updated_at: int = field(default_factory=lambda: int(time.time()))
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ReactorConfig":
+        raw_targets = data.get("target_chat_ids", [])
+        if isinstance(raw_targets, str):
+            try:
+                parsed = json.loads(raw_targets)
+                targets = [int(x) for x in parsed] if isinstance(parsed, list) else []
+            except (json.JSONDecodeError, ValueError, TypeError):
+                targets = []
+        elif isinstance(raw_targets, list):
+            targets = [int(x) for x in raw_targets]
+        else:
+            targets = []
+
+        raw_emoji = str(data.get("emoji", "❤️\u200d🔥"))
+        if raw_emoji == "❤️🔥":
+            raw_emoji = "❤️\u200d🔥"
+
+        return cls(
+            owner_id=int(data["owner_id"]),
+            enabled=bool(data.get("enabled", False)),
+            emoji=raw_emoji,
+            is_big=bool(data.get("is_big", True)),
+            only_incoming=bool(data.get("only_incoming", True)),
+            target_chat_ids=targets,
+            updated_at=int(data.get("updated_at") or int(time.time())),
+        )

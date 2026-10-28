@@ -4,9 +4,11 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from database.connection import Database
-from database.models import BusinessMessageModel
+from database.models import BusinessMessageModel, ReactorConfig
 from database.repository import BusinessRepository
+from handlers.reactor import REACTOR_EMOJI_PRESETS, cycle_reactor_emoji
 from services.formatter import BusinessReportFormatter
+from services.reactor_service import should_react_to_message
 
 MEDIA_TYPES = [
     "photo",
@@ -182,3 +184,82 @@ def test_prop_batch_deletion_and_repository(insert_ids, delete_ids):
             await db.close()
 
     asyncio.run(_run())
+
+
+@given(
+    owner_id=st.integers(min_value=1, max_value=10**12),
+    enabled=st.booleans(),
+    emoji=st.sampled_from(["❤️🔥", "❤️\u200d🔥", "🔥", "❤️", "⚡", "👍", "unknown"]),
+    is_big=st.booleans(),
+    only_incoming=st.booleans(),
+    target_chat_ids=st.lists(
+        st.integers(min_value=-(10**12), max_value=10**12), max_size=20
+    ),
+    updated_at=st.integers(min_value=1, max_value=2500000000),
+)
+@settings(max_examples=50)
+def test_prop_reactor_config_and_emoji_cycling(
+    owner_id, enabled, emoji, is_big, only_incoming, target_chat_ids, updated_at
+):
+    """Property test: ReactorConfig serialization, ZWJ normalization, and emoji preset cycle."""
+    cfg = ReactorConfig.from_dict(
+        {
+            "owner_id": owner_id,
+            "enabled": enabled,
+            "emoji": emoji,
+            "is_big": is_big,
+            "only_incoming": only_incoming,
+            "target_chat_ids": target_chat_ids,
+            "updated_at": updated_at,
+        }
+    )
+    assert cfg.emoji != "❤️🔥"
+    if emoji in ("❤️🔥", "❤️\u200d🔥"):
+        assert cfg.emoji == "❤️\u200d🔥"
+        assert "\u200d" in cfg.emoji
+
+    restored = ReactorConfig.from_dict(cfg.to_dict())
+    assert restored == cfg
+
+    next_emoji = cycle_reactor_emoji(emoji)
+    assert next_emoji in REACTOR_EMOJI_PRESETS
+    if emoji in REACTOR_EMOJI_PRESETS:
+        cur = emoji
+        for _ in range(len(REACTOR_EMOJI_PRESETS)):
+            cur = cycle_reactor_emoji(cur)
+        assert cur == emoji
+
+
+@given(
+    enabled=st.booleans(),
+    only_incoming=st.booleans(),
+    target_chat_ids=st.lists(st.integers(min_value=-1000, max_value=1000), max_size=10),
+    conn_user_id=st.integers(min_value=1, max_value=1000),
+    owner_id=st.integers(min_value=1, max_value=1000),
+    chat_id=st.integers(min_value=-1000, max_value=1000),
+    sender_id=st.one_of(st.none(), st.integers(min_value=1, max_value=1000)),
+)
+@settings(max_examples=100)
+def test_prop_should_react_to_message(
+    enabled, only_incoming, target_chat_ids, conn_user_id, owner_id, chat_id, sender_id
+):
+    """Property test: should_react_to_message enforces owner isolation and filtering invariants."""
+    cfg = ReactorConfig(
+        owner_id=owner_id,
+        enabled=enabled,
+        only_incoming=only_incoming,
+        target_chat_ids=target_chat_ids,
+    )
+    decision = should_react_to_message(cfg, conn_user_id, owner_id, chat_id, sender_id)
+
+    if (
+        not enabled
+        or conn_user_id != owner_id
+        or target_chat_ids
+        and chat_id not in target_chat_ids
+        or only_incoming
+        and sender_id == owner_id
+    ):
+        assert decision is False
+    else:
+        assert decision is True

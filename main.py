@@ -24,7 +24,7 @@ from config.settings import Settings, get_settings
 from database.connection import Database
 from database.models import BusinessConnectionModel
 from database.repository import BusinessRepository
-from handlers import business_router, user_commands_router
+from handlers import business_router, reactor_router, user_commands_router
 from middlewares import AuthMiddleware
 from utils.logging import setup_logger
 
@@ -73,6 +73,7 @@ def create_dispatcher(repository: BusinessRepository, settings: Settings) -> Dis
     dp["settings"] = settings
     dp.message.outer_middleware(AuthMiddleware())
     dp.callback_query.outer_middleware(AuthMiddleware())
+    dp.include_router(reactor_router)
     dp.include_router(user_commands_router)
     dp.include_router(business_router)
     return dp
@@ -125,6 +126,7 @@ async def restore_startup_state(
     bot: Bot, repository: BusinessRepository, settings: Settings
 ) -> None:
     """Pre-warms local SQLite database with active business connections on startup."""
+    await repository.get_reactor_config(settings.reactor_owner_id)
     target_ids: list[str] = []
     if settings.last_business_connection_id:
         target_ids.append(settings.last_business_connection_id)
