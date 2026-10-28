@@ -1,0 +1,47 @@
+В продакшене на Render мы убедились, что стандартный Bot API `bot.set_message_reaction` не видит сообщения внутри личных переписок 1-на-1 (`Bad Request: message to react not found`, так как Telegram запрещает бизнес-ботам вызывать `sendReaction` через Bot Token в чужих личках).
+
+Поэтому мы выполняем **Фазу 3**: подключаем легковесный MTProto-мост на базе `telethon` (`StringSession`) в `services/reactor_service.py`, чтобы при получении `business_message` реакция `❤️🔥` ставилась в личном чате напрямую от лица аккаунта владельца (`reactor_owner_id`).
+
+### Жёсткие архитектурные правила:
+1. Только `uv` (`uv add telethon`).
+2. Лимиты: максимум **400 строк на файл**, максимум **80 строк на функцию/метод** (`database/repository.py` не трогаем, там уже 389 строк!).
+3. Никакого `MagicMock` в тестах, все существующие 31 тест обязаны проходить + новые тесты для MTProto-отправки.
+4. Финальный фильтр: `uv run ruff format . && uv run ruff check --fix . && aislop.cmd scan && uv run pytest` -> `100 / 100 Healthy`.
+
+### Задачи Фазы 3:
+
+1. **Зависимость и настройки (`config/settings.py`):**
+   - Выполни `uv add telethon`.
+   - Добавь в `Settings` опциональные поля для MTProto-моста реактора:
+     - `reactor_api_id: int | None = None` (`REACTOR_API_ID`)
+     - `reactor_api_hash: str | None = None` (`REACTOR_API_HASH`)
+     - `reactor_string_session: str | None = None` (`REACTOR_STRING_SESSION`)
+
+2. **MTProto-клиент реактора (`services/reactor_mtproto.py` и `services/reactor_service.py`):**
+   - Создай `services/reactor_mtproto.py` (≤ 150 строк):
+     - Класс или менеджер `ReactorMTProtoClient`, который инициализирует `TelegramClient(StringSession(settings.reactor_string_session), settings.reactor_api_id, settings.reactor_api_hash, receive_updates=False)` (если все 3 параметра заданы).
+     - При первом подключении (`connect()`) проверяет `await client.is_user_authorized()` и один раз вызывает `await client.get_dialogs(limit=100)`, чтобы закэшировать `InputPeer` (`access_hash`) всех активных личных диалогов владельца.
+     - Метод `send_reaction(self, chat_id: int, message_id: int, emoji: str, is_big: bool = True) -> bool`: отправляет реакцию через `functions.messages.SendReactionRequest(peer=chat_id, msg_id=message_id, big=is_big, add_to_recent=True, reaction=[types.ReactionEmoji(emoticon=emoji)])`. Если `chat_id` не найден в кэше сущностей (`ValueError`), делает один ретрай после `await client.get_dialogs(limit=50)`.
+     - Корректный `close()` при завершении работы бота в `main.py`.
+   - В `services/reactor_service.py`:
+     - В `apply_auto_reaction`: если передан и активен MTProto-клиент (`mtproto_client` или синглтон при наличии `settings.reactor_string_session`), ставь реакцию через него! Если `reactor_string_session` не задан (например, в базовых старых тестах), используй фоллбэк на `bot.set_message_reaction`.
+
+3. **Утилита генерации сессии (`auth_session.py`):**
+   - Создай в корне компактный CLI-скрипт `auth_session.py` (≤ 60 строк), который запрашивает у пользователя `API_ID` и `API_HASH` (или берёт из `.env`), проводит интерактивный вход в `TelegramClient(StringSession(), ...)` и выводит в консоль готовые строки `REACTOR_API_ID=...`, `REACTOR_API_HASH=...`, `REACTOR_STRING_SESSION=...` для вставки в `.env` и Render.
+
+4. **Тестирование и фильтр качества:**
+   - В `tests/test_reactor.py` добавь честный стаб `DummyMTProtoClient` (без `MagicMock`) и тест, проверяющий, что при наличии MTProto-клиента `apply_auto_reaction` отправляет `"❤️\u200d🔥"` именно через MTProto (`chat_id=226583258, message_id=562718`), не вызывая ошибку `message to react not found`.
+   - Запусти `uv run ruff format . && uv run ruff check --fix . && aislop.cmd scan && uv run pytest`.
+   - Убедись, что оценка `aislop.cmd scan` равна **`100 / 100 Healthy`**, и выдай отчёт.
+
+---
+
+В проекте `telegram-business-watcher` (`E:\telegram-business-watcher`) выполни инициализацию/проверку **Entire CLI**, сделай коммит и запушь обновление в удалённый репозиторий:
+
+1. Проверь `entire status`. Если Entire ещё не активирован в этом репозитории, проверь неинтерактивные флаги через `entire agent-help enable` и выполни `entire enable`, чтобы Git-хуки (`prepare-commit-msg`, `post-commit`, `pre-push`) были активны.
+2. Если `entire enable` создал служебную директорию `.entire/`, убедись, что `aislop.cmd scan` по-прежнему выдаёт `100 / 100 Healthy` (при необходимости добавь `.entire/` в `.aislopignore`).
+3. Проверь `git status` — убедись, что `.env` и любые файлы сессий `*.session` в `.gitignore` и НЕ попадают в индекс.
+4. Выполни `git add .` и сделай коммит:
+   `git commit -m "feat(reactor): add stealth auto-reactor control plane and Telethon MTProto bridge"`
+5. Выполни `git push`, чтобы отправить коммит и чекпоинты Entire в GitHub (и запустить деплой на Render).
+6. Выдай краткий отчёт с выводом `entire status`, `git log -n 1` и результатом `git push`.
