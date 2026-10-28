@@ -20,34 +20,12 @@ from handlers.reactor import (
 from handlers.user_commands import _get_welcome_text
 from keyboards.inline import get_back_keyboard, get_main_keyboard
 from middlewares.auth import AuthMiddleware
-from services.reactor_mtproto import ReactorMTProtoClient
-from services.reactor_service import apply_auto_reaction
 from tests.test_resilience import DummyBot
 from tests.test_resilience import MockRedis as FakeRedis
 
 OWNER_ID = 965180470
 SECOND_ALLOWED_ID = 226583258
 OUTSIDER_ID = 999999
-
-
-class DummyMTProtoClient:
-    """Honest test double for ReactorMTProtoClient recording MTProto reactions."""
-
-    def __init__(self) -> None:
-        self.sent_reactions: list[dict[str, Any]] = []
-
-    async def send_reaction(
-        self, chat_id: int, message_id: int, emoji: str, is_big: bool = True
-    ) -> bool:
-        self.sent_reactions.append(
-            {
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "emoji": emoji,
-                "is_big": is_big,
-            }
-        )
-        return True
 
 
 def _make_event_message(
@@ -323,7 +301,7 @@ def _make_biz_msg(conn_id: str, chat_id: int, msg_id: int, sender_id: int) -> An
 
 
 def test_auto_reaction_isolation_and_incoming_filter():
-    """Verifies reactions apply only to owner's connection, respect only_incoming, and support MTProto."""
+    """Verifies reactions apply only to owner's connection and respect only_incoming."""
 
     async def _run():
         db = Database(":memory:")
@@ -369,66 +347,7 @@ def test_auto_reaction_isolation_and_incoming_filter():
                 _make_biz_msg("conn_second", 888, 201, 888), bot, repo, settings
             )
             assert len(bot.reactions) == 1
-
-            # 4. MTProto bridge dispatches ❤️‍🔥 directly without Bot API set_message_reaction
-            mtproto = DummyMTProtoClient()
-            msg_mt = _make_biz_msg(
-                "conn_owner", SECOND_ALLOWED_ID, 562718, SECOND_ALLOWED_ID
-            )
-            ok = await apply_auto_reaction(
-                bot, msg_mt, repo, settings, OWNER_ID, mtproto_client=mtproto
-            )
-            assert ok is True
-            assert mtproto.sent_reactions == [
-                {
-                    "chat_id": 226583258,
-                    "message_id": 562718,
-                    "emoji": "❤️\u200d🔥",
-                    "is_big": True,
-                }
-            ]
-            assert len(bot.reactions) == 1
         finally:
             await db.close()
-
-    asyncio.run(_run())
-
-
-def test_mtproto_client_retry_on_missing_peer():
-    """Verifies ReactorMTProtoClient refreshes dialogs once when peer is missing in cache."""
-
-    class FakeTelethonClient:
-        def __init__(self) -> None:
-            self.calls = 0
-            self.dialogs_fetched: list[int] = []
-
-        def is_connected(self) -> bool:
-            return True
-
-        async def is_user_authorized(self) -> bool:
-            return True
-
-        async def get_dialogs(self, limit: int = 100) -> list[Any]:
-            self.dialogs_fetched.append(limit)
-            return []
-
-        async def __call__(self, request: Any) -> bool:
-            self.calls += 1
-            if self.calls == 1:
-                raise ValueError("Could not find the input entity")
-            return True
-
-        async def disconnect(self) -> None:
-            pass
-
-    async def _run():
-        mt = ReactorMTProtoClient(12345, "hash_abc", "session_xyz")
-        fake_tl = FakeTelethonClient()
-        mt._client = fake_tl  # type: ignore[assignment]
-        ok = await mt.send_reaction(226583258, 562718, "❤️\u200d🔥", is_big=True)
-        assert ok is True
-        assert fake_tl.calls == 2
-        assert fake_tl.dialogs_fetched == [100, 50]
-        await mt.close()
 
     asyncio.run(_run())

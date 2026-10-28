@@ -11,14 +11,12 @@ dependencies = [
     "pydantic-settings>=2.7.0",
     "aiohttp>=3.10.0",
     "redis>=5.0.0",
-    "telethon>=1.45.0",
 ]
 
 [dependency-groups]
 dev = [
     "hypothesis>=6.170.12",
     "pytest>=9.1.1",
-    "qrcode>=8.2",
     "ruff>=0.17.2",
 ]
 
