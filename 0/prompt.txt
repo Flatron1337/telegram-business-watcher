@@ -1,0 +1,37 @@
+Обнови auth_session.py, config/settings.py и services/reactor_mtproto.py для поддержки входа по QR-коду с 2FA и корректных заголовков официального клиента Telegram Desktop:
+
+1. Выполни команду: uv add --dev qrcode (для отрисовки QR-кода прямо в терминале).
+
+2. В config/settings.py задай значения по умолчанию для публичной пары Telegram Desktop:
+   - reactor_api_id: int = 2040
+   - reactor_api_hash: str = "REDACTED"
+
+3. В services/reactor_mtproto.py при инициализации TelegramClient передавай корректные заголовки Telegram Desktop, чтобы антифрод Telegram не сбрасывал сессию:
+   device_model="Desktop",
+   system_version="Windows 11",
+   app_version="5.10.3 x64",
+   lang_code="ru",
+   system_lang_code="ru-RU"
+
+4. Перепиши auth_session.py (не более 75 строк):
+   - Используй по умолчанию api_id = 2040 и api_hash = "REDACTED" без лишних вопросов в input().
+   - Создавай клиент TelegramClient(StringSession(), api_id, api_hash, device_model="Desktop", system_version="Windows 11", app_version="5.10.3 x64", lang_code="ru", system_lang_code="ru-RU") и вызывай await client.connect().
+   - Запускай qr_login = await client.qr_login() и отрисовывай qr_login.url прямо в консоль через qrcode.QRCode() и qr.print_ascii(invert=True) с подсказкой: "Отсканируйте QR-код с телефона: Настройки -> Устройства -> Подключить устройство".
+   - Ожидай сканирования через await qr_login.wait(timeout=120).
+   - Перехватывай исключение SessionPasswordNeededError (из telethon.errors): запрашивай облачный пароль 2FA через input("Введите ваш облачный пароль 2FA: ") и выполняй await client.sign_in(password=REDACTED
+   - После успешного входа выводи в консоль готовую строку REACTOR_STRING_SESSION=... и закрывай клиент.
+
+5. Проверь, что все файлы проходят фильтр качества:
+   uv run ruff format . && uv run ruff check --fix . && aislop.cmd scan && uv run pytest
+   (оценка aislop должна остаться 100 / 100 Healthy).
+
+---
+
+В проекте telegram-business-watcher выполни проверку Entire CLI, сделай коммит и отправь изменения в GitHub:
+
+1. Проверь статус через entire status (если хуки ещё не включены, выполни entire enable с неинтерактивными флагами из entire agent-help enable и убедись, что .entire добавлен в .aislopignore, чтобы aislop.cmd scan оставался 100 / 100 Healthy).
+2. Проверь git status — убедись, что файл .env и любые файлы *.session НЕ попадают в коммит.
+3. Выполни git add . и закоммить изменения:
+   git commit -m "feat(reactor): add Telethon MTProto QR login with 2FA and Desktop headers"
+4. Выполни git push.
+5. Выведи краткий отчёт с результатами entire status и git push.

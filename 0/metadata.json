@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.12.2",
+  "checkpoint_id": "01M617RPPB1GT3BKHWG2V3Y2WN",
+  "session_id": "33b5f219-76a8-4f5b-a0da-d1b831542a0e",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-28T12:29:11.6127886Z",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "save_step_count": 2,
+  "files_touched": [
+    "auth_session.py",
+    "config/settings.py",
+    "pyproject.toml",
+    "services/reactor_mtproto.py",
+    "uv.lock"
+  ],
+  "agent": "Antigravity",
+  "model": "",
+  "turn_id": "7c078aec6a5f",
+  "checkpoint_transcript_start": 175,
+  "transcript_lines_at_start": 175,
+  "redaction": {
+    "replacements": 21,
+    "layers": {
+      "betterleaks": 6,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 15,
+      "credentialed_uri": 0,
+      "entropy": 1,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 5
+  }
+}
