@@ -20,12 +20,34 @@ from handlers.reactor import (
 from handlers.user_commands import _get_welcome_text
 from keyboards.inline import get_back_keyboard, get_main_keyboard
 from middlewares.auth import AuthMiddleware
+from services.reactor_mtproto import ReactorMTProtoClient
+from services.reactor_service import apply_auto_reaction
 from tests.test_resilience import DummyBot
 from tests.test_resilience import MockRedis as FakeRedis
 
 OWNER_ID = 965180470
 SECOND_ALLOWED_ID = 226583258
 OUTSIDER_ID = 999999
+
+
+class DummyMTProtoClient:
+    """Honest test double for ReactorMTProtoClient recording MTProto reactions."""
+
+    def __init__(self) -> None:
+        self.sent_reactions: list[dict[str, Any]] = []
+
+    async def send_reaction(
+        self, chat_id: int, message_id: int, emoji: str, is_big: bool = True
+    ) -> bool:
+        self.sent_reactions.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "emoji": emoji,
+                "is_big": is_big,
+            }
+        )
+        return True
 
 
 def _make_event_message(
@@ -54,23 +76,29 @@ def _make_event_message(
         return True
 
     fwd_user = SimpleNamespace(id=forward_from_id) if forward_from_id else None
+    empty_fields = dict.fromkeys(
+        [
+            "caption",
+            "business_connection_id",
+            "forward_from_chat",
+            "forward_origin",
+            "reply_to_message",
+        ],
+        None,
+    )
     return SimpleNamespace(
         message_id=msg_id,
         from_user=SimpleNamespace(id=user_id, is_bot=False, username=f"u_{user_id}"),
         chat=SimpleNamespace(id=target_chat_id),
         text=text,
-        caption=None,
-        business_connection_id=None,
         forward_from=fwd_user,
-        forward_from_chat=None,
-        forward_origin=None,
-        reply_to_message=None,
         answer=_answer,
         edit_text=_edit_text,
         delete=_delete,
         answered=answered,
         edited=edited,
         deleted=deleted,
+        **empty_fields,
     )
 
 
@@ -266,19 +294,17 @@ def test_reactor_targets_hide_and_redis_self_healing():
 
 
 def _make_biz_msg(conn_id: str, chat_id: int, msg_id: int, sender_id: int) -> Any:
-    empty_media = dict.fromkeys(
-        [
-            "photo",
-            "video",
-            "video_note",
-            "voice",
-            "audio",
-            "document",
-            "animation",
-            "sticker",
-        ],
-        None,
-    )
+    keys = [
+        "photo",
+        "video",
+        "video_note",
+        "voice",
+        "audio",
+        "document",
+        "animation",
+        "sticker",
+    ]
+    empty_media = dict.fromkeys(keys, None)
     return SimpleNamespace(
         business_connection_id=conn_id,
         chat=SimpleNamespace(
@@ -297,7 +323,7 @@ def _make_biz_msg(conn_id: str, chat_id: int, msg_id: int, sender_id: int) -> An
 
 
 def test_auto_reaction_isolation_and_incoming_filter():
-    """Verifies reactions apply only to owner's connection and respect only_incoming."""
+    """Verifies reactions apply only to owner's connection, respect only_incoming, and support MTProto."""
 
     async def _run():
         db = Database(":memory:")
@@ -311,39 +337,21 @@ def test_auto_reaction_isolation_and_incoming_filter():
         )
 
         try:
-            await repo.save_connection(
-                BusinessConnectionModel(
-                    connection_id="conn_owner",
-                    user_id=OWNER_ID,
-                    user_chat_id=OWNER_ID,
-                    can_reply=True,
-                    is_enabled=True,
-                    connected_at=1700000000,
+            for cid, uid in (
+                ("conn_owner", OWNER_ID),
+                ("conn_second", SECOND_ALLOWED_ID),
+            ):
+                await repo.save_connection(
+                    BusinessConnectionModel(cid, uid, uid, True, True, 1700000000)
                 )
-            )
-            await repo.save_connection(
-                BusinessConnectionModel(
-                    connection_id="conn_second",
-                    user_id=SECOND_ALLOWED_ID,
-                    user_chat_id=SECOND_ALLOWED_ID,
-                    can_reply=True,
-                    is_enabled=True,
-                    connected_at=1700000000,
-                )
-            )
             await repo.save_reactor_config(
-                ReactorConfig(
-                    owner_id=OWNER_ID,
-                    enabled=True,
-                    emoji="❤️\u200d🔥",
-                    is_big=True,
-                    only_incoming=True,
-                )
+                ReactorConfig(OWNER_ID, True, "❤️\u200d🔥", True, True)
             )
 
             # 1. Incoming message from interlocutor (555) in owner's chat -> gets ❤️‍🔥 reaction
-            msg_in = _make_biz_msg("conn_owner", chat_id=555, msg_id=101, sender_id=555)
-            await on_business_message(msg_in, bot, repo, settings)
+            await on_business_message(
+                _make_biz_msg("conn_owner", 555, 101, 555), bot, repo, settings
+            )
             assert len(bot.reactions) == 1
             assert bot.reactions[0]["chat_id"] == 555
             assert bot.reactions[0]["message_id"] == 101
@@ -351,19 +359,76 @@ def test_auto_reaction_isolation_and_incoming_filter():
             assert bot.reactions[0]["is_big"] is True
 
             # 2. Outgoing message from owner himself -> ignored when only_incoming=True
-            msg_out = _make_biz_msg(
-                "conn_owner", chat_id=555, msg_id=102, sender_id=OWNER_ID
+            await on_business_message(
+                _make_biz_msg("conn_owner", 555, 102, OWNER_ID), bot, repo, settings
             )
-            await on_business_message(msg_out, bot, repo, settings)
             assert len(bot.reactions) == 1
 
             # 3. Incoming message in second allowed user's business connection -> strictly ignored!
-            msg_other_conn = _make_biz_msg(
-                "conn_second", chat_id=888, msg_id=201, sender_id=888
+            await on_business_message(
+                _make_biz_msg("conn_second", 888, 201, 888), bot, repo, settings
             )
-            await on_business_message(msg_other_conn, bot, repo, settings)
+            assert len(bot.reactions) == 1
+
+            # 4. MTProto bridge dispatches ❤️‍🔥 directly without Bot API set_message_reaction
+            mtproto = DummyMTProtoClient()
+            msg_mt = _make_biz_msg(
+                "conn_owner", SECOND_ALLOWED_ID, 562718, SECOND_ALLOWED_ID
+            )
+            ok = await apply_auto_reaction(
+                bot, msg_mt, repo, settings, OWNER_ID, mtproto_client=mtproto
+            )
+            assert ok is True
+            assert mtproto.sent_reactions == [
+                {
+                    "chat_id": 226583258,
+                    "message_id": 562718,
+                    "emoji": "❤️\u200d🔥",
+                    "is_big": True,
+                }
+            ]
             assert len(bot.reactions) == 1
         finally:
             await db.close()
+
+    asyncio.run(_run())
+
+
+def test_mtproto_client_retry_on_missing_peer():
+    """Verifies ReactorMTProtoClient refreshes dialogs once when peer is missing in cache."""
+
+    class FakeTelethonClient:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.dialogs_fetched: list[int] = []
+
+        def is_connected(self) -> bool:
+            return True
+
+        async def is_user_authorized(self) -> bool:
+            return True
+
+        async def get_dialogs(self, limit: int = 100) -> list[Any]:
+            self.dialogs_fetched.append(limit)
+            return []
+
+        async def __call__(self, request: Any) -> bool:
+            self.calls += 1
+            if self.calls == 1:
+                raise ValueError("Could not find the input entity")
+            return True
+
+        async def disconnect(self) -> None:
+            pass
+
+    async def _run():
+        mt = ReactorMTProtoClient(12345, "hash_abc", "session_xyz")
+        fake_tl = FakeTelethonClient()
+        mt._client = fake_tl  # type: ignore[assignment]
+        ok = await mt.send_reaction(226583258, 562718, "❤️\u200d🔥", is_big=True)
+        assert ok is True
+        assert fake_tl.calls == 2
+        assert fake_tl.dialogs_fetched == [100, 50]
+        await mt.close()
 
     asyncio.run(_run())

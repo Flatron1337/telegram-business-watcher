@@ -1,3 +1,5 @@
+from typing import Any
+
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message, ReactionTypeEmoji
@@ -6,6 +8,7 @@ from config.settings import Settings
 from database.models import ReactorConfig
 from database.repository import BusinessRepository
 from services.media import safe_telegram_call
+from services.reactor_mtproto import get_mtproto_client
 from utils.logging import setup_logger
 
 logger = setup_logger("business.services.reactor")
@@ -32,8 +35,9 @@ async def apply_auto_reaction(
     repository: BusinessRepository,
     settings: Settings,
     conn_user_id: int,
+    mtproto_client: Any | None = None,
 ) -> bool:
-    """Applies the configured emoji reaction to a business message if eligible."""
+    """Applies the configured emoji reaction via MTProto bridge or Bot API fallback."""
     if conn_user_id != settings.reactor_owner_id:
         return False
 
@@ -50,6 +54,23 @@ async def apply_auto_reaction(
     ):
         return False
 
+    active_mtproto = mtproto_client or get_mtproto_client(settings)
+    if active_mtproto is not None:
+        ok = await active_mtproto.send_reaction(
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            emoji=config.emoji,
+            is_big=config.is_big,
+        )
+        if ok:
+            logger.debug(
+                "Applied MTProto stealth reaction (%s) to chat=%s, msg=%s",
+                config.emoji,
+                message.chat.id,
+                message.message_id,
+            )
+        return bool(ok)
+
     try:
         await safe_telegram_call(
             bot.set_message_reaction,
@@ -59,7 +80,7 @@ async def apply_auto_reaction(
             is_big=config.is_big,
         )
         logger.debug(
-            "Applied stealth reaction (%s) to chat=%s, msg=%s",
+            "Applied Bot API stealth reaction (%s) to chat=%s, msg=%s",
             config.emoji,
             message.chat.id,
             message.message_id,

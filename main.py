@@ -26,6 +26,7 @@ from database.models import BusinessConnectionModel
 from database.repository import BusinessRepository
 from handlers import business_router, reactor_router, user_commands_router
 from middlewares import AuthMiddleware
+from services.reactor_mtproto import close_mtproto_client, get_mtproto_client
 from utils.logging import setup_logger
 
 logger = setup_logger("business.main")
@@ -127,6 +128,9 @@ async def restore_startup_state(
 ) -> None:
     """Pre-warms local SQLite database with active business connections on startup."""
     await repository.get_reactor_config(settings.reactor_owner_id)
+    mtproto = get_mtproto_client(settings)
+    if mtproto is not None:
+        await mtproto.connect()
     target_ids: list[str] = []
     if settings.last_business_connection_id:
         target_ids.append(settings.last_business_connection_id)
@@ -256,6 +260,7 @@ async def run_bot() -> None:
         if redis_client:
             with contextlib.suppress(OSError, TimeoutError):
                 await redis_client.aclose()
+        await close_mtproto_client()
         await bot.session.close()
         await database.close()
         logger.info("Shutdown complete.")
