@@ -1,2 +1,11 @@
 .venv/
 .git/
+.entire/
+.opencode/
+.pi/
+.agents/
+.claude/
+.codex/
+.cursor/
+.factory/
+.github/
