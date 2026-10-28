@@ -1,0 +1,13 @@
+В проекте telegram-business-watcher выполни откат MTProto-клиента (telethon), так как антифрод Telegram блокирует подключение пользовательских StringSession с облачных IP датацентров Render:
+
+1. Удали файлы auth_session.py и services/reactor_mtproto.py.
+2. Выполни команду: uv remove telethon && uv remove --dev qrcode
+3. В requirements.txt удали строку telethon>=1.45.0.
+4. В config/settings.py удали поля reactor_api_id, reactor_api_hash и reactor_string_session.
+5. В main.py, services/__init__.py, services/reactor_service.py и tests/test_reactor.py убери импорты и вызовы reactor_mtproto, оставив только чистую работу через Bot API.
+6. Запусти фильтр качества:
+   uv run ruff format . && uv run ruff check --fix . && aislop.cmd scan && uv run pytest
+   (оценка aislop должна быть 100 / 100 Healthy).
+7. Выполни git add ., сделай коммит:
+   git commit -m "chore(security): remove MTProto user session bridge from cloud runtime"
+   и отправь изменения через git push.
