@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     ping_interval_seconds: int = 300
     allowed_user_ids: str | list[int] = [965180470, 226583258]
     reactor_owner_id: int = 965180470
-    reactor_api_id: int | None = None
-    reactor_api_hash: str | None = None
+    reactor_api_id: int = 2040
+    reactor_api_hash: str = "b18441a1ff607e10a989891a5462e627"
     reactor_string_session: str | None = None
     last_business_connection_id: str | None = None
     redis_url: str | None = None

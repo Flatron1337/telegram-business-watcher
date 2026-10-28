@@ -1,38 +1,55 @@
 import asyncio
-import os
 
+import qrcode
 from telethon import TelegramClient
+from telethon.errors import SessionPasswordNeededError
 from telethon.sessions import StringSession
 
-
-def _read_credential(env_key: str, prompt_text: str) -> str:
-    val = os.getenv(env_key, "").strip()
-    if val:
-        return val
-    return input(prompt_text).strip()
+DEFAULT_API_ID = 2040
+DEFAULT_API_HASH = "b18441a1ff607e10a989891a5462e627"
 
 
 async def generate_session() -> None:
-    """Interactive CLI helper to generate a Telethon StringSession for the MTProto reactor."""
-    raw_api_id = _read_credential(
-        "REACTOR_API_ID", "Enter Telegram API_ID (from my.telegram.org): "
+    """Interactive CLI helper to generate a Telethon StringSession via QR login and 2FA."""
+    client = TelegramClient(
+        StringSession(),
+        DEFAULT_API_ID,
+        DEFAULT_API_HASH,
+        device_model="Desktop",
+        system_version="Windows 11",
+        app_version="5.10.3 x64",
+        lang_code="ru",
+        system_lang_code="ru-RU",
     )
-    api_hash = _read_credential(
-        "REACTOR_API_HASH", "Enter Telegram API_HASH (from my.telegram.org): "
-    )
-    if not raw_api_id.isdigit() or not api_hash:
-        raise SystemExit("Error: Valid numeric API_ID and API_HASH are required.")
+    await client.connect()
+    try:
+        qr_login = await client.qr_login()
+        print(
+            "\nОтсканируйте QR-код с телефона: "
+            "Настройки -> Устройства -> Подключить устройство\n"
+        )
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(qr_login.url)
+        qr.make(fit=True)
+        qr.print_ascii(invert=True)
 
-    api_id = int(raw_api_id)
-    async with TelegramClient(StringSession(), api_id, api_hash) as client:
+        try:
+            await qr_login.wait(timeout=120)
+        except SessionPasswordNeededError as exc:
+            print(f"\nТребуется двухфакторная защита ({exc.__class__.__name__}).")
+            password = input("Введите ваш облачный пароль 2FA: ").strip()
+            await client.sign_in(password=password)
+
         session_str = client.session.save()
         me = await client.get_me()
         username = getattr(me, "username", None) or getattr(me, "id", "user")
-        print(f"\nSuccessfully authenticated as @{username}!")
-        print("\nAdd these variables to your .env and Render Environment:\n")
-        print(f"REACTOR_API_ID={api_id}")
-        print(f"REACTOR_API_HASH={api_hash}")
+        print(f"\nУспешный вход в аккаунт @{username}!")
+        print("\nДобавьте эти строки в .env и Render Environment:\n")
+        print(f"REACTOR_API_ID={DEFAULT_API_ID}")
+        print(f"REACTOR_API_HASH={DEFAULT_API_HASH}")
         print(f"REACTOR_STRING_SESSION={session_str}\n")
+    finally:
+        await client.disconnect()
 
 
 if __name__ == "__main__":

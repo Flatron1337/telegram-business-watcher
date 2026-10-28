@@ -40,6 +40,11 @@ class ReactorMTProtoClient:
                 StringSession(self.string_session),
                 self.api_id,
                 self.api_hash,
+                device_model="Desktop",
+                system_version="Windows 11",
+                app_version="5.10.3 x64",
+                lang_code="ru",
+                system_lang_code="ru-RU",
                 receive_updates=False,
             )
 
