@@ -1,0 +1,100 @@
+Мы добавляем в проект `telegram-business-watcher` новую стелс-фичу: **Авто-реактор `❤️🔥` (Огненное сердце)** с секретной инлайн-панелью настроек внутри бота. Работаем по фазам. Сейчас выполняем ТОЛЬКО **Фазу 1** (Конфиг, Dual-Write хранилище настроек SQLite + Redis и секретная панель управления `/reactor`).
+
+### Жёсткие архитектурные и OPSEC-правила:
+1. **Абсолютный стелс (Zero-Knowledge для других пользователей):**
+   - К боту имеют доступ несколько человек из `ALLOWED_USER_IDS`, но знать о существовании реактора и управлять им может ТОЛЬКО один владелец: `REACTOR_OWNER_ID` (по умолчанию `965180470`).
+   - В текстах `/start`, `/help` и в меню команд бота НЕ ДОЛЖНО быть ни одного упоминания `/reactor`.
+   - Если любой пользователь с `user.id != settings.reactor_owner_id` (даже если он есть в `ALLOWED_USER_IDS`) напишет `/reactor` или нажмёт callback `reactor:*`, бот НЕ ДОЛЖЕН отвечать «⛔️ Доступ ограничен» — он обязан полностью проигнорировать событие без единого сообщения в ответ, чтобы не выдать существование секретной команды.
+2. **По умолчанию ВЫКЛЮЧЕН:**
+   - При первом запуске или отсутствии записи в БД/Redis реактор обязан быть выключен (`enabled = False`).
+3. **Стандарты проекта:**
+   - Только `uv`, лимиты ≤ 400 строк на файл и ≤ 80 строк на функцию/метод, время строго UTC+0.
+   - Существующие тесты в `tests/` ослаблять или удалять запрещено.
+
+### Задачи Фазы 1:
+
+1. **Конфигурация (`config.py`):**
+   - Добавь в `Settings` поле `reactor_owner_id: int = 965180470` (читается из `REACTOR_OWNER_ID`, по дефолту `965180470`).
+
+2. **Dual-Write хранилище настроек реактора (SQLite + Redis):**
+   - Создай компактную модель/структуру `ReactorConfig` (`owner_id: int`, `enabled: bool = False`, `emoji: str = "❤️🔥"`, `is_big: bool = True`, `only_incoming: bool = True`, `target_chat_ids: list[int] = []`, `updated_at: int`).
+   - Добавь таблицу `reactor_settings` в SQLite (с автоматическим созданием в `init_db`) и методы в репозитории / `RedisStore` (`biz:reactor:{owner_id}`) по нашему паттерну Dual-Write + автоматическое самовосстановление (self-healing) из Redis в SQLite при старте бота.
+
+3. **Секретная инлайн-панель настроек (`handlers/reactor.py` или `services/reactor.py`):**
+   - Команда `/reactor` (с фильтром `F.from_user.id == settings.reactor_owner_id`) открывает интерактивное меню с инлайн-кнопками:
+     - `🟢 Статус: ВКЛ` / `🔴 Статус: ВЫКЛ` (переключение `enabled`)
+     - `❤️🔥 Эмодзи: ❤️🔥` (циклическое переключение пресетов: `❤️🔥` -> `🔥` -> `❤️` -> `⚡` -> `👍`)
+     - `💥 Анимация: Большая` / `Обычная` (переключение `is_big`)
+     - `🎯 Режим: Только входящие` / `Все сообщения` (переключение `only_incoming`)
+     - `🗑 Скрыть пульт` — удаляет сообщение с пультом (и пытается удалить сообщение `/reactor` пользователя), чтобы в истории чата с ботом не оставалось следов.
+   - Добавь поддержку команды `/reactor_target <chat_id>` (или пересылки сообщения) только для `reactor_owner_id`, чтобы можно было легко добавить/удалить конкретный `chat_id` в список целей (если список пуст — работает для всех чатов владельца).
+
+4. **Проверка Фазы 1:**
+   - Запусти `uv run ruff format . && uv run ruff check --fix . && uv run pytest`.
+   - Остановись и выдай краткий отчёт по Фазе 1. В Фазе 2 мы подключим сам движок постановки реакций и напишем тесты + фаззинг.
+
+---
+
+Мы в проекте `telegram-business-watcher`. Фаза 1 для стелс-реактора завершена. Сейчас выполняем финальную **Фазу 2**: исправление ZWJ-кода эмодзи `❤️🔥`, подключение движка постановки реакций, написание тестов (`pytest` + `hypothesis`) и прохождение фильтра `aislop 100/100`.
+
+### Жёсткие архитектурные правила:
+1. Лимиты: максимум **400 строк на файл**, максимум **80 строк на функцию/метод**. Обрати внимание: `database/repository.py` сейчас 389 строк — НЕ добавляй в него новый код, чтобы не превысить 400 строк!
+2. Запрещено удалять или ослаблять существующие 25 тестов в `tests/` (правило `tests/AGENTS.md`). Никакого `MagicMock` — используем наш `DummyBot` и `FakeRedis`.
+3. Финальный фильтр качества обязан пройти со 100/100:
+   `uv run ruff format . && uv run ruff check --fix . && aislop.cmd scan && uv run pytest`
+
+### Задачи Фазы 2:
+
+1. **Критическое исправление ZWJ-эмодзи «Огненное сердце» (`"❤️\u200d🔥"`):**
+   - В Фазе 1 в `database/models.py`, `database/connection.py` и `handlers/reactor.py` была записана строка `"❤️🔥"` (два отдельных эмодзи без Zero-Width Joiner `\u200d`), которая вызывает в Telegram API ошибку `400 REACTION_INVALID`.
+   - Замени везде `"❤️🔥"` на валидный единый ZWJ-эмодзи `"❤️\u200d🔥"` (`"❤️🔥"`).
+   - В `ReactorConfig.from_dict()` добавь авто-нормализацию: если из БД или Redis пришла старая строка `"❤️🔥"`, автоматически заменяй её на `"❤️\u200d🔥"`.
+
+2. **Создание движка авто-реакций (`services/reactor_service.py`) и интеграция:**
+   - Создай `services/reactor_service.py`:
+     - Чистая функция `should_react_to_message(config: ReactorConfig, conn_user_id: int, owner_id: int, chat_id: int, sender_id: int | None) -> bool`:
+       - Возвращает `False`, если `not config.enabled` или `conn_user_id != owner_id` (строгая изоляция: реактор работает ТОЛЬКО для бизнес-подключения самого `reactor_owner_id`, никогда не срабатывая на подключениях других людей из `ALLOWED_USER_IDS`!).
+       - Если `config.target_chat_ids` не пуст и `chat_id not in config.target_chat_ids` — возвращает `False`.
+       - Если `config.only_incoming` равен `True` и `sender_id == owner_id` (исходящее сообщение самого владельца) — возвращает `False`.
+       - Иначе возвращает `True`.
+     - Асинхронная функция `apply_auto_reaction(bot: Bot, message: Message, repository: BusinessRepository, settings: Settings, conn_user_id: int) -> bool`:
+       - Загружает `config = await repository.get_reactor_config(settings.reactor_owner_id)`.
+       - Проверяет `should_react_to_message(...)`.
+       - Если `True` — вызывает через `safe_telegram_call` метод `bot.set_message_reaction(chat_id=message.chat.id, message_id=message.message_id, reaction=[ReactionTypeEmoji(emoji=config.emoji)], is_big=config.is_big)`. Любые ошибки Telegram API логируются на уровне `debug`/`warning` и перехватываются, чтобы ни при каких условиях не прервать сохранение сообщения в `on_business_message`.
+   - В `handlers/business.py` внутри `on_business_message`: после сохранения сообщения вызови `await apply_auto_reaction(bot, message, repository, settings, conn.user_id)`. Проверь, чтобы `handlers/business.py` остался строго меньше 400 строк.
+   - В `DummyBot` (в `tests/`) добавь метод `set_message_reaction(self, chat_id: int, message_id: int, reaction: list[Any], is_big: bool = False, **kwargs: Any) -> bool`, который записывает вызовы в `self.reactions: list[dict[str, Any]]` для честных проверок в тестах.
+
+3. **Тестирование (`tests/`) и фаззинг (`hypothesis`):**
+   - Добавь тесты стелс-реактора (в новый или существующий тестовый модуль с соблюдением лимита ≤ 400 строк на файл):
+     - **Тест стелса (Zero-Knowledge):** когда второй разрешённый пользователь (`226583258`) или посторонний (`999999`) вызывает `AuthMiddleware` с `/reactor` или `reactor:toggle_enabled`, хендлер не вызывается и бот не отправляет вообще никаких ответов (`len(bot.sent_messages) == 0`).
+     - **Тест управления и Dual-Write Self-Healing:** владелец (`965180470`) открывает `/reactor` (по умолчанию `enabled is False`), включает реактор, переключает эмодзи по кругу (`"❤️\u200d🔥"` присутствует с `\u200d`), добавляет/удаляет `target_chat_ids`, жмёт `reactor:hide` (сообщение удаляется). При очистке SQLite конфиг восстанавливается из `FakeRedis`.
+     - **Тест постановки реакций:** при `enabled=True` и `only_incoming=True` входящее сообщение от собеседника в чате владельца (`965180470`) получает реакцию `"❤️\u200d🔥"` в `bot.reactions`, исходящее сообщение самого владельца игнорируется, а сообщения в бизнес-чате второго пользователя (`226583258`) полностью игнорируются.
+   - В `tests/test_properties.py` добавь `@given` фаззинг для `ReactorConfig.from_dict`, `cycle_reactor_emoji` и `should_react_to_message`.
+
+4. **Финальный фильтр качества:**
+   - Выполни `uv run ruff format . && uv run ruff check --fix . && aislop.cmd scan && uv run pytest`.
+   - Доведи результат `aislop.cmd scan` до **`100 / 100 Healthy`** и выдай финальный отчёт.
+
+---
+
+продолжай
+
+---
+
+продолжай
+
+---
+
+В текущем проекте `telegram-business-watcher` (`E:\telegram-business-watcher`) выполни инициализацию **Entire CLI** и зафиксируй наши изменения:
+
+1. Проверь доступные флаги через `entire agent-help enable` (чтобы не зависнуть на интерактивном вводе) и выполни инициализацию `entire enable`.
+2. Проверь статус через `entire status`, чтобы убедиться, что Git-хуки Entire активны.
+3. Убедись, что служебные файлы `.entire` не нарушают `aislop.cmd scan` (при необходимости добавь `.entire` в `.aislopignore` или `.gitignore` согласно конфигурации Entire) и прогони контрольный фильтр:
+   `uv run ruff format . && uv run ruff check --fix . && aislop.cmd scan && uv run pytest`
+   (результат обязан остаться `100 / 100 Healthy` и `31 passed`).
+4. Выдай краткий отчёт с выводом `entire status` и `git status`.
+
+и не забудь вот это сделать
+entire plugin install brain
+entire brain setup
+entire brain connect
